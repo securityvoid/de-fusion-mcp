@@ -1,0 +1,155 @@
+# tasks.md — docs/specs/core/
+> De-Fusion MCP — add-in runtime, action framework, profiles, auth and installer
+
+## Legend
+- `[ ]` not started, `[x]` done.
+- `[REQ-...]` requirements the task satisfies; § refers to `docs/specs/core/design.md`.
+- _Output_: files created or changed. _Verify_: exact commands; all must pass.
+- All commands run from the repository root. Unit tests use `tests/fakes/adsk` (no Fusion).
+- Live tasks run on this Mac with Fusion installed; the agent drives Fusion via the commands given.
+
+## Phase 1 — Scaffolding
+- [x] **TASK-CORE-001** [REQ-CORE-004, NFR-CORE-003]: Create the repository layout, manifest and version
+  - Create every directory and empty module of § 2 that core owns (`De-Fusion/defusion/{__init__,config,profiles,auth,server,dispatch,actions,types,units,context,errors,results,log}.py`, `tests/`, `scripts/`).
+  - `defusion/__init__.py`: `__version__ = "0.1.0"`.
+  - `De-Fusion/De-Fusion.manifest`: JSON with `autodeskProduct: "Fusion"`, `type: "addin"`, `id` (fixed UUID4), `author: "Doug Logan"`, `description: "De-Fusion: a comprehensive MCP server for Autodesk Fusion"`, `version: "0.1.0"`, `runOnStartup: true`, `supportedOS: "windows|mac"`, `editEnabled: true`.
+  - `.gitignore`: `De-Fusion/lib/`, `__pycache__/`, `.pytest_cache/`.
+  - `pyproject.toml` with `[tool.pytest.ini_options]` `pythonpath = ["De-Fusion", "tests/fakes"]`, `testpaths = ["tests"]`.
+  - `tests/test_manifest.py`: asserts `runOnStartup` is true, supportedOS, `author`, `description`, and manifest version == `defusion.__version__`.
+  - _Output_: `De-Fusion/De-Fusion.manifest`, `De-Fusion/defusion/*.py`, `.gitignore`, `pyproject.toml`, `tests/test_manifest.py`
+  - _Reuse_: none (first task).
+  - _Verify_: `pytest -q tests/test_manifest.py && git check-ignore De-Fusion/lib/x`
+- [x] **TASK-CORE-002** [NFR-CORE-003]: Pin dependencies
+  - `requirements.in`: exactly `mcp==2.3.0` and `uvicorn`.
+  - Generate `requirements.lock` for Fusion's Python 3.14 on both platforms: `uv pip compile requirements.in -o requirements.lock --universal --python-version 3.14 --no-header --no-annotate`.
+  - _Output_: `requirements.in`, `requirements.lock`
+  - _Reuse_: `uv pip compile` (installed at /opt/homebrew/bin/uv).
+  - _Verify_: `grep -qx 'mcp==2.3.0' requirements.lock && grep -q '^uvicorn==' requirements.lock && ! grep -vE '^[A-Za-z0-9_.-]+(\[[^]]*\])?==[^ ]+( ;.*)?$' requirements.lock`
+- [x] **TASK-CORE-003** [NFR-CORE-002]: Fake adsk package for unit tests
+  - `tests/fakes/adsk/{__init__,core,fusion,cam}.py`: `Application.get()` with `fireCustomEvent` (can be told to drop the next N fires), `registerCustomEvent`/`unregisterCustomEvent`, `executeTextCommand` (records commands; configurable to raise), `userInterface`, `activeDocument` (with `products.itemByProductType`), `activeProduct`; `Design` with `designType`, `unitsManager` (`isValidExpression`, `evaluateExpression`, `defaultLengthUnits`), `findEntityByToken`, `rootComponent`, `activeComponent`, `allComponents`, `timeline`; `Component` with `bodies`, `sketches`, origin planes/axes, `constructionPlanes`, `constructionAxes`; `BRepBody` with `faces/edges/vertices`, `boundingBox`, `isVisible`; `Sketch` with `profiles`; `Point3D`, `Vector3D`, `ValueInput.createByString`, `ObjectCollection`, `FeatureOperations`, attributes. Every fake records `threading.get_ident()` of each call.
+  - `tests/conftest.py`: fixtures `fake_app`, `fake_design`, `registry` (an isolated action registry so core tests never import `defusion.tools`).
+  - _Output_: `tests/fakes/adsk/__init__.py`, `tests/fakes/adsk/core.py`, `tests/fakes/adsk/fusion.py`, `tests/fakes/adsk/cam.py`, `tests/conftest.py`, `tests/test_fakes.py`
+  - _Reuse_: none; fakes mirror only the `adsk` names listed here.
+  - _Verify_: `pytest -q tests/test_fakes.py`
+
+## Phase 2 — Framework
+- [x] **TASK-CORE-004** [REQ-CORE-025]: Errors
+  - `errors.py`: `ActionError(code, message, hints=(), **extra)` with `.to_dict()`; constants for every § 5.10 code; `from_exception(exc)` → `FUSION_ERROR` with text and type name.
+  - _Output_: `De-Fusion/defusion/errors.py`, `tests/test_errors.py`
+  - _Reuse_: none.
+  - _Verify_: `pytest -q tests/test_errors.py`
+- [x] **TASK-CORE-005** [REQ-CORE-035, REQ-CORE-036]: Units
+  - `units.py`: `to_expr(value, default_unit)`, `evaluate_length(expr, design|None, param)` → cm, `evaluate_angle(...)` → rad (design path uses `isValidExpression`/`evaluateExpression`; no-design path uses the fixed tables), `OutputUnits(length, angle)` with validation and `length/area/volume/angle/mass` converters.
+  - _Output_: `De-Fusion/defusion/units.py`, `tests/test_units.py`
+  - _Reuse_: `errors.py` (TASK-CORE-004).
+  - _Verify_: `pytest -q tests/test_units.py`
+- [x] **TASK-CORE-006** [REQ-CORE-015, REQ-CORE-016]: Scalar, geometric and enum types
+  - `types.py`: `Length`, `Angle`, `Expr` (pydantic-compatible annotated types; resolve to `Value(expr, cm|rad, value_input())`), `Point3`, `Vector3`, `Operation`, `FileName` (the one shared client file-name pattern of § 5.4; `INVALID_PARAMS` on mismatch) and the enum-mapping helper `adsk_enum(literal_value)`.
+  - _Output_: `De-Fusion/defusion/types.py`, `tests/test_types_scalar.py`
+  - _Reuse_: `units.py` (TASK-CORE-005), `errors.py`; pydantic `Annotated`/`BeforeValidator` for schemas.
+  - _Verify_: `pytest -q tests/test_types_scalar.py`
+- [x] **TASK-CORE-007** [REQ-CORE-017, REQ-CORE-018, REQ-CORE-019, REQ-CORE-020, REQ-CORE-021, REQ-CORE-044, REQ-CORE-045, REQ-CORE-046, REQ-CORE-047]: Entity Refs, Plane, Axis, Profile, Point2, CAM refs
+  - `types.py`: Ref schema (token / name+component / body+index / bare string), one resolver per entity type of § 5.4 (including `MeshBody`, `JointOrigin`, `RigidGroup`, `ContactSet` with `UNSUPPORTED` when `design.contactSets` is absent, `Entity` with no class check, `TimelineItem` via `timelineObject` or `{"index": n}`, `CamSetup`/`CamOperation` within the CAM product), `Point2` (2-item sketch space; 3-item via the action's `sketch` param `modelToSketchSpace`, z = 0), `Plane`/`Axis` origin names against the action's `component` param else `design.activeComponent`, `Profile`, list resolution, union branches and recursive resolution of Ref fields inside pydantic-model params; errors `NOT_FOUND`, `AMBIGUOUS` (with `candidates`), `INVALID_PARAMS`.
+  - `resolve_params(ctx, action, validated) -> dict` is the single entry used by the pipeline and `call_inline`.
+  - _Output_: `De-Fusion/defusion/types.py`, `tests/test_types_refs.py`
+  - _Reuse_: `types.py` scalar types (TASK-CORE-006), `errors.py`; fakes for `MeshBody`, joint origins, rigid groups, contact sets, timeline and `adsk.cam` setups/operations are added to `tests/fakes/adsk` here.
+  - _Verify_: `pytest -q tests/test_types_refs.py`
+- [x] **TASK-CORE-008** [REQ-CORE-028, REQ-CORE-021, REQ-CORE-042]: Ctx
+  - `context.py`: `Ctx` fields and every helper of § 5.9 (`design` from `document.products.itemByProductType("DesignProductType")`, `allowed`, `profile_items`, `units`, `ref`, `refs`, unit outputs, `page(seq, offset, limit, build=fn)` (slices before building items; bounds per § 5.5), `text_command`, `attr_set` (`json.dumps`)/`attr_get` (`json.loads` or `None`) on group `defusion`, `fail`, `require_design`, `require_parametric`, `component`); `Ctx.offline(allowed, profile_items, units)` builds the Fusion-free Ctx for `main_thread=False` actions.
+  - _Output_: `De-Fusion/defusion/context.py`, `tests/test_context.py`
+  - _Reuse_: `types.py` (TASK-CORE-007) for `ref`, `units.OutputUnits` (TASK-CORE-005), `errors.py`.
+  - _Verify_: `pytest -q tests/test_context.py`
+- [x] **TASK-CORE-009** [REQ-CORE-022, REQ-CORE-023, REQ-CORE-027]: Results, size budget, paging, change summary
+  - `results.py`: `ok_envelope`, `error_envelope`, `to_call_result` (Text + structuredContent; one or several `Image` → ImageContent + Text), 64 KiB check (UTF-8 bytes of the JSON; tests at 65,536 and 65,537) and total image byte limit → `RESULT_TOO_LARGE`, `page()` bounds, body-count cap on the bbox, `snapshot(design, units)` and `diff(before, after)` per § 5.8.
+  - _Output_: `De-Fusion/defusion/results.py`, `tests/test_results.py`
+  - _Reuse_: `context.Ctx.ref` and `units.OutputUnits`; `mcp.types` `CallToolResult`, `TextContent`, `ImageContent`.
+  - _Verify_: `pytest -q tests/test_results.py`
+- [x] **TASK-CORE-010** [REQ-CORE-007, REQ-CORE-008, REQ-CORE-009, REQ-CORE-048, REQ-CORE-049]: Dispatcher and job registry
+  - `dispatch.py`: `register()`/`unregister()` of custom event `defusion.dispatch`, `run(fn, timeout=30)`, 100 ms re-fire timer, main-thread handler guarded by `_running` (returns immediately when re-entered, § 4), `NOT_EXECUTED` for queued timeouts (naming the running job when one is running), queue cap, `queued`→`running` and timeout removal both under the queue lock (§ 4), job registry (ids `uuid4().hex[:8]`; 100, oldest evicted; a finishing result goes through the § 5.5 size check and is stored `failed` with `RESULT_TOO_LARGE` when over), `get_job(id)`, `queue_depth()`, `running_count()`, `fail_queued()`, `clear_jobs()`, inline execution without `adsk`.
+  - _Output_: `De-Fusion/defusion/dispatch.py`, `tests/test_dispatch.py`
+  - _Reuse_: `errors.py`; `threading.Event`, `threading.Timer`, `collections.OrderedDict` for the registry.
+  - _Verify_: `pytest -q tests/test_dispatch.py`
+- [x] **TASK-CORE-011** [REQ-CORE-010, REQ-CORE-011, REQ-CORE-012, REQ-CORE-024, REQ-CORE-041]: @action registration, tool surface and help
+  - `actions.py`: `action(tool, name=None, access=..., timeout=30, undo_group=True, main_thread=True)` (`main_thread=False` only on `read` actions without Ref-typed params), annotation checks (unions and `Annotated` allowed), pydantic model (`extra="forbid"`, `confirm` added for destructive), duplicate check, `build_tool(tool, allowed)` → input schema and description (§ 5.2, summary is the first line of the tool module docstring, a full sentence used as is; a test asserts no `..` in the description), `help_result(tool, allowed, params)`.
+  - `defusion/tools/__init__.py`: imports `document sketch model assembly history inspect view cam script server` and raises if any registered no action.
+  - _Output_: `De-Fusion/defusion/actions.py`, `De-Fusion/defusion/tools/__init__.py`, `tests/test_actions_registry.py`
+  - _Reuse_: `types.py`, `errors.py`; `pydantic.create_model`, `inspect.signature`, `typing.get_type_hints`.
+  - _Verify_: `pytest -q tests/test_actions_registry.py`
+- [x] **TASK-CORE-012** [REQ-CORE-013, REQ-CORE-014, REQ-CORE-026, REQ-CORE-027, REQ-CORE-005, REQ-CORE-037, REQ-CORE-025, REQ-CORE-041, REQ-CORE-043]: Call pipeline with undo grouping and inline calls
+  - `actions.py`: `call(tool, args, allowed, profile_items, output_units)` implementing § 5.3 steps 1–7 (`units` validated by `OutputUnits` as step 4 with params, failure `INVALID_PARAMS`; `main_thread=False` actions called directly with `Ctx.offline`, not time-limited, run to completion on the request thread), PTransaction Start/Commit/Abort and `undo_grouped: false` (top-level envelope key, present only when false; also when Commit raises; an Abort that raises keeps the original error), change summary, `ActionError` extras copied into `error`, exception → `FUSION_ERROR`, one log line per call (tool, action, duration, outcome code); `call_inline(ctx, tool, action, params)` per § 5.11.
+  - _Output_: `De-Fusion/defusion/actions.py`, `tests/test_pipeline.py`
+  - _Reuse_: `actions.py` registry (TASK-CORE-011), `dispatch.run`, `context.Ctx`, `results.py`, `log.py` logger name `defusion`.
+  - _Verify_: `pytest -q tests/test_pipeline.py`
+
+## Phase 3 — Config, profiles, auth, server
+- [x] **TASK-CORE-013** [REQ-CORE-029, REQ-CORE-037, REQ-CORE-049]: Config and logging
+  - `config.py`: `CONFIG_DIR` (`~/.defusion` / `%USERPROFILE%\.defusion`, overridable by env `DEFUSION_CONFIG_DIR` for tests), `CONFIG_PATH`, `DEFAULT_TOML` (exact § 6.1 text), `load()` → `(Config, error|None)` storing the result for `settings()` and `load_error()` (§ 12); validates every key per the § 6.1 table and treats a blank token as an error; checks only syntax, name rules and cycles (selector-matches-no-action is checked by `start()` in TASK-CORE-016); any error leaves no default fallback (fail-closed rule of § 6.1).
+  - `log.py`: `setup(config_dir, level)` replacing any existing handler, with `RotatingFileHandler(maxBytes=1048576, backupCount=3)` on `defusion.log`.
+  - _Output_: `De-Fusion/defusion/config.py`, `De-Fusion/defusion/log.py`, `tests/test_config.py`, `tests/test_log.py`
+  - _Reuse_: `tomllib`, `logging.handlers.RotatingFileHandler`; `profiles.merge` is called from `load()` once TASK-CORE-014 exists.
+  - _Verify_: `pytest -q tests/test_config.py tests/test_log.py`
+- [x] **TASK-CORE-014** [REQ-CORE-030, REQ-CORE-031, NFR-CORE-001]: Profiles
+  - `profiles.py`: `BUILTIN` (§ 6.2), `merge(builtin, user)` with name validation, `resolve(items, profiles, registry)` → set of `(tool, action)` with splicing, start rule, left-to-right apply and `InvalidProfile(item)`, `parse_query(qs)` (empty value, blank item or repeated `profile` key → `INVALID_PROFILE`).
+  - _Output_: `De-Fusion/defusion/profiles.py`, `tests/test_profiles.py`
+  - _Reuse_: `actions.py` registry, `fnmatch.fnmatchcase`, `config.py` (TASK-CORE-013).
+  - _Verify_: `pytest -q tests/test_profiles.py`
+- [x] **TASK-CORE-015** [REQ-CORE-034, REQ-CORE-049]: Bearer auth middleware
+  - `auth.py`: `token_from(config, environ)`, `token()` (effective token after `start()`, § 12), `BearerAuth(app, token)` ASGI middleware using `hmac.compare_digest` on UTF-8 bytes (decode failure → 401), 401 body per § 7.
+  - _Output_: `De-Fusion/defusion/auth.py`, `tests/test_auth.py`
+  - _Reuse_: `hmac.compare_digest`; `config.py` for the token.
+  - _Verify_: `pytest -q tests/test_auth.py`
+- [x] **TASK-CORE-016** [REQ-CORE-002, REQ-CORE-003, REQ-CORE-006, NFR-CORE-005, REQ-CORE-049]: Server construction, start and stop
+  - `server.py`: `INSTRUCTIONS`, `build_app(config, registry)` (MCPServer, one SDK tool per tool calling `actions.call`, `streamable_http_app(...)` per § 3.2, auth wrap), `start()`/`stop()` per § 3.1/§ 3.3 (after importing `defusion.tools`, `start()` resolves `default_profile` and `[profiles]` items against the registry and records an unmatched selector as the same config error; SDK default `max_request_body_size`; bind-failure log text per § 3.1), module-level state read through `state()` (§ 12).
+  - _Output_: `De-Fusion/defusion/server.py`, `tests/test_server_lifecycle.py`
+  - _Reuse_: `mcp.server.MCPServer` from mcp==2.3.0, `uvicorn.Server`/`uvicorn.Config`, `config.py`, `log.py`, `dispatch.py`, `actions.call`, `auth.BearerAuth`.
+  - _Verify_: `pytest -q tests/test_server_lifecycle.py`
+- [x] **TASK-CORE-017** [REQ-CORE-032, REQ-CORE-033]: Per-request profile middleware
+  - `server.py`: `ServerMiddleware` reading `profile` from the request query, per-query-string cache, `tools/list` filtering, enum/description rewrite, annotations, `INVALID_PROFILE` JSON-RPC error, `server.status`/`server.job_status` always allowed, a config error leaves only those two allowed and every other call `NOT_ALLOWED` naming the error (§ 6.1), allowed set (`"tool.action"` strings) and expanded profile items passed to `actions.call`.
+  - _Output_: `De-Fusion/defusion/server.py`, `tests/test_profile_middleware.py`
+  - _Reuse_: `profiles.resolve`/`parse_query` (TASK-CORE-014), the SDK `ServerMiddleware` hook of mcp==2.3.0, `actions.build_tool`.
+  - _Verify_: `pytest -q tests/test_profile_middleware.py`
+- [x] **TASK-CORE-018** [REQ-CORE-001]: Add-in entry
+  - `De-Fusion/De-Fusion.py`: `run(context)`/`stop(context)` per § 3.1 (logger at `INFO`; `server.start` re-applies `log_level`); never spawns pip; catches and logs exceptions so Fusion shows no dialog.
+  - _Output_: `De-Fusion/De-Fusion.py`, `tests/test_entry.py`
+  - _Reuse_: `log.setup`, `server.start`/`server.stop`, `config.CONFIG_DIR`.
+  - _Verify_: `pytest -q tests/test_entry.py`
+- [x] **TASK-CORE-019** [REQ-CORE-005, REQ-CORE-006, REQ-CORE-012, REQ-CORE-032, REQ-CORE-033, REQ-CORE-034]: In-process MCP surface test
+  - Start `build_app` with fakes and test-registered actions under uvicorn on a free port; use the SDK streamable HTTP client to run `initialize`, `tools/list`, `tools/call` with and without `?profile=`, with and without token, wrong Host header, valid Host with `Origin: http://evil.example` (rejected, no action runs), a config with a syntax error or invalid profile (`NOT_ALLOWED` on a write action, `server.status` shows `config.error`), a body one byte over the SDK default (rejected), and assert all fake adsk calls ran on the dispatcher thread.
+  - _Output_: `tests/test_mcp_surface.py`
+  - _Reuse_: `server.build_app`, `tests/fakes/adsk`, `tests/conftest.py` fixtures, the SDK streamable HTTP client and `ClientSession` (mcp==2.3.0).
+  - _Verify_: `pytest -q tests/test_mcp_surface.py && pytest -q`
+
+## Phase 4 — Installer, live harness, live verification
+- [x] **TASK-CORE-020** [REQ-CORE-038, REQ-CORE-039]: Installer
+  - `install.py`: Fusion Python discovery (macOS `.../Versions/Current/bin/python3`, Windows `...\Python\python.exe`, newest build dir by mtime, `--fusion-python`, exit 2 with searched paths), pip into `De-Fusion/lib` from `requirements.lock` (non-zero exit: print pip's output, exit 1, no later step), single symlink/junction, `config.toml` write-if-absent using `defusion.config.DEFAULT_TOML`, `mcp.json` print (configured port, exact text of § 9) with optional `headers` and `?profile=` note, `--uninstall`; flags, `--help` and exit codes per § 9. Paths derive from `HOME`/`LOCALAPPDATA`/`APPDATA` so tests use temp dirs; pip is called through one function the tests replace.
+  - _Output_: `install.py`, `tests/test_install.py`
+  - _Reuse_: `defusion.config.DEFAULT_TOML`; `pathlib`, `subprocess`, `os.symlink`, `mklink /J` via `subprocess` on Windows.
+  - _Verify_: `pytest -q tests/test_install.py`
+- [x] **TASK-CORE-021** [REQ-CORE-040]: Live check harness
+  - `scripts/live_check.py`: args `--profile`, `--only`, `--port` (default the config `port`, 8642), token from env `DEFUSION_TOKEN` only (`--token` is rejected); flags, `--help` and exit codes per § 10; SDK `ClientSession`; helper `open_session(profile=None)` (async context manager on the harness port and token); helper `call(session, tool, action, params, units=None)` returning the parsed envelope; helper `box(session, w, d, h, name=None)` per § 10 (`sketch.create` on XY, `sketch.rectangle`, `model.extrude` new_body; returns the body Ref); creates a scratch design via `document.create` on its own `full` profile session (same token; scenarios use the `--profile` session), imports `LIVE_SCENARIOS` from each `defusion.tools.<tool>` module (list of `(name, "tool.action", async fn(session))`, § 10), filters by `--only tool` (module) or `--only tool.action` (tag), awaits each, prints `PASS <name> (<tool.action>)` / `FAIL <name> (<tool.action>): <error>`, closes the scratch document without saving, exits 1 on any failure, exits 2 when the server is unreachable. `tests/test_live_check.py` runs it against the in-process app with one passing and one failing fake scenario, `--profile readonly`, `--port`, `DEFUSION_TOKEN`, exit 2 against a closed port, the exact PASS and FAIL lines, `--token` rejected, and `open_session("readonly")` listing only read actions, and `box` creating a body.
+  - _Output_: `scripts/live_check.py`, `tests/test_live_check.py`
+  - _Reuse_: the SDK streamable HTTP client and `ClientSession` (mcp==2.3.0); `LIVE_SCENARIOS` in each tool module.
+  - _Verify_: `pytest -q tests/test_live_check.py`
+- [x] **TASK-CORE-022** [REQ-CORE-001, REQ-CORE-002, REQ-CORE-004, REQ-CORE-006, NFR-CORE-001, NFR-CORE-005]: Live install and start in Fusion
+  - Waits on DEP-CORE-001 and DEP-CORE-002 (every tool module exists with ≥1 action; server set provides `server.status`/`server.job_status`).
+  - Run the installer, quit and relaunch Fusion, confirm the add-in is listed once as `De-Fusion` and running, and that `tools/list` works over curl and the SDK client.
+  - _Output_: none (verification only; fix defects in the files above)
+  - _Reuse_: `install.py`, `scripts/live_check.py`.
+  - _Verify_: `python3 install.py && osascript -e 'quit app "Autodesk Fusion"'; sleep 10; open -a "Autodesk Fusion"; sleep 90; ls -la "$HOME/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns/" | grep -c 'De-Fusion' | grep -qx 1 && lsof -nP -iTCP:8642 -sTCP:LISTEN | grep -q '127.0.0.1:8642' && curl -sf -X POST http://127.0.0.1:8642/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -c 'import json,sys; t=json.load(sys.stdin)["result"]["tools"]; assert "server" in {x["name"] for x in t}' && python scripts/live_check.py --only server`
+- [x] **TASK-CORE-023** [REQ-CORE-032, REQ-CORE-033, REQ-CORE-034]: Live profile filtering and token on/off
+  - With the add-in running: `?profile=readonly` lists only read actions with `readOnlyHint: true`; `?profile=nosuch` returns a JSON-RPC error naming `nosuch`; set `token = "t0k"` in `~/.defusion/config.toml`, call `server.restart_addin`, confirm 401 without the header and success with it; remove the token, restart, confirm no header is needed.
+  - _Output_: none (verification only)
+  - _Reuse_: `scripts/live_check.py`, `server.restart_addin` (server set).
+  - _Verify_: `python scripts/live_check.py --profile readonly --only server.status && curl -s -X POST 'http://127.0.0.1:8642/mcp?profile=nosuch' -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | grep -q nosuch`, then after enabling the token: `curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8642/mcp | grep -qx 401 && DEFUSION_TOKEN=t0k python scripts/live_check.py --only server`, then after removing it: `python scripts/live_check.py --only server`
+- [x] **TASK-CORE-024** [REQ-CORE-003]: Live stop and restart
+  - Call `server.restart_addin` and confirm the server returns on the same port; quit Fusion and confirm the port is released; relaunch and confirm it starts again automatically.
+  - _Output_: none (verification only)
+  - _Reuse_: `scripts/live_check.py`, `server.restart_addin` (server set).
+  - _Verify_: `python scripts/live_check.py --only server && osascript -e 'quit app "Autodesk Fusion"'; sleep 15; ! lsof -nP -iTCP:8642 -sTCP:LISTEN && open -a "Autodesk Fusion" && sleep 90 && python scripts/live_check.py --only server`
+
+## Phase 5 — Documentation
+- [x] **TASK-CORE-025** [REQ-CORE-040]: README.md
+  - README.md documents install (`python install.py`, `--fusion-python`, `--uninstall`, restart Fusion, do not add the repo with "+"), the `mcp.json` entry, the config file keys, built-in profiles and selector grammar with the § 6.3 examples, the optional token (stating that `?profile=` and `confirm` are chosen by the client and do not restrict a local caller; the token is the only access control), and units in/out.
+  - _Output_: `README.md`
+  - _Reuse_: design.md § 6, § 7, § 8, § 9 text; `install.py` output for the mcp.json entry.
+  - _Verify_: `for h in Install mcp.json Config Profiles Token Units; do grep -qi "^## .*$h" README.md || exit 1; done`

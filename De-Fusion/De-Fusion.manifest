@@ -1,0 +1,11 @@
+{
+  "autodeskProduct": "Fusion",
+  "type": "addin",
+  "id": "ed3c81ae-fceb-4d5d-b001-fb9855a02b86",
+  "author": "Doug Logan",
+  "description": "De-Fusion: a comprehensive MCP server for Autodesk Fusion",
+  "version": "0.1.0",
+  "runOnStartup": true,
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}
