@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parent
 WINDOWS = sys.platform == "win32"
-EXIT_CODES = ("Exit codes: 0 success, 1 pip failed, 2 Fusion Python not found, 3 link conflict, "
+EXIT_CODES = ("Exit codes: 0 success, 1 pip failed or missing/older than 22.3, 2 Fusion Python not found, 3 link conflict, "
               "4 invalid --folder.")
 
 
@@ -133,6 +133,15 @@ def top_level_config(path):
     return port, token, folder
 
 
+def clear_tmp():
+    """Remove every installer build dir (lib.tmp-*); errors are ignored."""
+    for d in (ROOT / "De-Fusion").glob("lib.tmp-*"):
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass
+
+
 def uninstall():
     link = link_path()
     if link.is_symlink() or link.exists():
@@ -140,7 +149,8 @@ def uninstall():
             return conflict(link)
         remove_link(link)
     shutil.rmtree(ROOT / "De-Fusion" / "lib", ignore_errors=True)
-    print("Removed the De-Fusion link and lib/; kept %s" % (config_dir() / "config.toml"))
+    clear_tmp()
+    print("Removed the De-Fusion link, lib/ and lib.tmp-*; kept %s" % (config_dir() / "config.toml"))
     return 0
 
 
@@ -149,12 +159,34 @@ def install(fusion_python, folder=None):
     if not python or not Path(python).exists():
         print("Fusion Python not found. Searched:\n  " + "\n  ".join(searched) + "\nUse --fusion-python PATH.", file=sys.stderr)
         return 2
+    code, out = run_pip([sys.executable, "-m", "pip", "--version"])
+    m = re.match(r"pip (\d+)\.(\d+)", out) if code == 0 else None
+    if not m or (int(m.group(1)), int(m.group(2))) < (22, 3):
+        print("pip 22.3 or newer is required to install into Fusion's Python (found %s); run python -m pip "
+              "install --upgrade pip, or rerun install.py with a Python that has pip"
+              % ("%s.%s" % m.groups() if m else "none"), file=sys.stderr)
+        return 1
     lib = ROOT / "De-Fusion" / "lib"
-    shutil.rmtree(lib, ignore_errors=True)
-    code, output = run_pip([python, "-m", "pip", "install", "--upgrade", "--no-compile",
-                            "--target", str(lib), "-r", str(ROOT / "requirements.lock")])
+    tmp = lib.with_name("lib.tmp-%d" % os.getpid())
+    clear_tmp()
+    code, output = run_pip([sys.executable, "-m", "pip", "--python", python, "install", "--upgrade",
+                            "--no-compile", "--target", str(tmp), "-r", str(ROOT / "requirements.lock")])
     if code != 0:
+        clear_tmp()
         print(output, file=sys.stderr)
+        return 1
+    try:
+        if lib.exists():
+            shutil.rmtree(lib)
+    except OSError:
+        clear_tmp()
+        print("close Fusion and rerun install.py", file=sys.stderr)
+        return 1
+    try:
+        os.rename(tmp, lib)
+    except OSError:
+        clear_tmp()
+        print("rerun install.py", file=sys.stderr)
         return 1
     link = link_path()
     if link.is_symlink() or link.exists():
@@ -186,7 +218,7 @@ def install(fusion_python, folder=None):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="install.py", description="Install De-Fusion into Autodesk Fusion.",
                                  epilog=EXIT_CODES, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--uninstall", action="store_true", help="remove the link and lib/; keep config.toml")
+    ap.add_argument("--uninstall", action="store_true", help="remove the link, lib/ and lib.tmp-*; keep config.toml")
     ap.add_argument("--fusion-python", metavar="PATH", help="Fusion's Python instead of the newest discovered one")
     ap.add_argument("--folder", metavar="PATH",
                     help="print the url with ?folder=PATH (a folder limit like Project/Folder); "

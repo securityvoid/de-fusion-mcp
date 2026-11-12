@@ -320,27 +320,36 @@ installer, the live test harness and README.md. Tool actions are specified by th
 ### Installer, live harness, README
 - **REQ-CORE-038**: `install.py` (any Python ≥ 3.10) shall locate Fusion's newest bundled Python
   (macOS and Windows paths of § 9, newest build directory by modification time, `--fusion-python`
-  override, exit 2 listing searched paths when not found), delete `De-Fusion/lib`, run
-  `<fusion python> -m pip install --upgrade --no-compile --target De-Fusion/lib -r
-  requirements.lock`, and create exactly one link (macOS symlink, Windows directory junction) at
+  override, exit 2 listing searched paths when not found), install `requirements.lock` into a temp
+  `De-Fusion/lib.tmp-<pid>` with pip run from `sys.executable` (pip 22.3+) and swap it in for `lib/`
+  per core design § 9 step 2 (pip probe, stale and failure-path temp cleanup, old-`lib` removal and
+  rename failures), and create exactly one link (macOS symlink, Windows directory junction) at
   Fusion's AddIns `De-Fusion` path, keeping a correct existing link and stopping with exit 3 and a message
-  naming the path and saying to remove it if anything else is there; a non-zero pip exit shall print
-  pip's output, exit 1 and perform no later step. Flags and exit codes are those of § 9: `--fusion-python
-  PATH`, `--uninstall`, `--folder PATH`, `--help`; exit 0 success, 1 pip failure, 2 Fusion Python not
-  found, 3 link conflict, 4 invalid `--folder` (§ 9 steps 1–3).
+  naming the path and saying to remove it if anything else is there. Flags and exit codes are those of
+  § 9: `--fusion-python PATH`, `--uninstall`, `--folder PATH`, `--help`; exit 0 success, 1 pip failed or
+  missing/older than 22.3, 2 Fusion Python not found, 3 link conflict, 4 invalid `--folder`
+  (§ 9 steps 1–3).
   - _Acceptance_: Unit tests with temp dirs: the newest of two fake builds is chosen; none found →
-    exit 2 with paths; the pip command line is exact; an existing correct link is kept; a regular
-    directory at the link path stops the installer with the message; a failing fake pip exits 1 and
-    creates no link; `--help` lists the flags including `--folder` and exit code 4; `--folder " / "` prints
-    the § 9 message (equal to the design text), exits 4 and makes no pip call.
+    exit 2 with paths; the pip command line is exact, including option order (`--python` before `install`);
+    a probe with non-zero exit, unparseable output, `pip 22.2` or `pip garbage` exits 1 with the § 9
+    message, leaves `lib/` untouched, creates no link and runs no later step, while `pip 24.0b1` and
+    `pip 22.3.1` pass (exit 0); stale `lib.tmp-*` dirs are removed before pip and the temp dir is removed
+    after a failure; a failing pip leaves an existing `lib/` untouched, exits 1 and creates no link;
+    success replaces `lib/` by renaming the temp dir; a failing removal of the old `lib/` (rmtree
+    failure) exits 1 with "close Fusion and rerun install.py" and removes `lib.tmp-*`; a rename failure
+    prints "rerun install.py", exits 1, leaves no `lib.tmp-*` and creates no link; an existing correct
+    link is kept; a regular directory at the link path stops the installer with the message; `--help`
+    lists the flags including `--folder`, exit code 1 as "pip failed or missing/older than 22.3", and
+    exit code 4; `--folder " / "` prints the § 9 message (equal to the design text), exits 4 and makes
+    no pip call.
 - **REQ-CORE-039**: `install.py` shall write `config.toml` with the § 6.1 content if absent, print,
   with the configured port, the `mcp.json` entry `{"mcpServers": {"de-fusion": {"type": "http", "url":
   "http://127.0.0.1:<port>/mcp"}}}` plus a `headers` line when a token is configured and how to add
   `?profile=`, with `?folder=<URL-encoded folder>` on the url (and `&profile=` in the hint) when
-  `--folder` or the config `folder` is set (`--folder` wins, § 9 step 5); `--uninstall` shall remove the link and `lib/` and keep `config.toml` (§ 9 steps
+  `--folder` or the config `folder` is set (`--folder` wins, § 9 step 5); `--uninstall` shall remove the link, `lib/` and any `lib.tmp-*` and keep `config.toml` (§ 9 steps
   4–5).
   - _Acceptance_: Unit tests: an existing config is not overwritten; output contains the JSON and,
-    with a token, `Authorization: Bearer`; `--uninstall` leaves only `config.toml`; `--folder
+    with a token, `Authorization: Bearer`; `--uninstall` removes the link, `lib/` and `lib.tmp-*` and leaves only `config.toml`; `--folder
     "My Project/Parts"` prints url `http://127.0.0.1:8642/mcp?folder=My%20Project%2FParts` and
     `Append &profile=`; config `folder = "P"` without `--folder` prints `?folder=P`; with neither the
     url has no query.

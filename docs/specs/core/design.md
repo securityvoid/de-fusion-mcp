@@ -605,16 +605,29 @@ else, including a header that fails to decode, with 401 JSON
 ## 9. Installer (`install.py`)
 Run with any Python ≥ 3.10 outside Fusion: `python install.py [--uninstall] [--fusion-python PATH]
 [--folder PATH]` (`--help` prints these flags and the exit codes). Exit codes: 0 success, 1 pip
-failed, 2 Fusion Python not found, 3 link conflict, 4 invalid `--folder` (checked first, before
+failed or missing/older than 22.3, 2 Fusion Python not found, 3 link conflict, 4 invalid `--folder` (checked first, before
 any other step: `norm(value)` empty → `--folder needs a project-qualified path like
 Project/Folder`).
 1. Finds Fusion's newest bundled Python:
    - macOS: newest `~/Library/Application Support/Autodesk/webdeploy/production/*/Autodesk Fusion.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3`.
    - Windows: newest `%LOCALAPPDATA%\Autodesk\webdeploy\production\*\Python\python.exe`.
    - `--fusion-python` overrides. Not found → exits 2 with the paths searched.
-2. Runs `<fusion python> -m pip install --upgrade --no-compile --target De-Fusion/lib -r requirements.lock`
-   after deleting the old `lib/`. Binary wheels therefore match Fusion's Python and platform. A
-   non-zero pip exit prints pip's output, exits 1 and performs no later step.
+2. Runs pip from the Python executing `install.py` (`sys.executable`; Fusion's bundled Python has no
+   pip): `[sys.executable, "-m", "pip", "--python", <fusion python>, "install", "--upgrade",
+   "--no-compile", "--target", <temp dir>, "-r", "requirements.lock"]`, with `--python` before the
+   subcommand. Binary wheels therefore match Fusion's Python and platform. pip 22.3+ is required,
+   probed first with `[sys.executable, "-m", "pip", "--version"]`: output matching `^pip (\d+)\.(\d+)`
+   with `(major, minor) >= (22, 3)` passes; otherwise (non-zero exit, no match, older) it prints exactly `pip 22.3 or newer is required to
+   install into Fusion's Python (found <major>.<minor>|none); run python -m pip install --upgrade pip, or
+   rerun install.py with a Python that has pip`, exits 1 and performs no later step: `lib/` is
+   untouched and no link is made. The build dir is `De-Fusion/lib.tmp-<pid>`; stale `lib.tmp-*` are
+   removed before pip runs (removal errors are ignored: `rmtree(ignore_errors=True)`, as `--uninstall`
+   does), the probe and install both run through `run_pip`, and the build dir is removed on every failure path. Only when pip
+   succeeds is the old `lib/` removed and the build dir renamed to `lib/`, so a failed pip leaves an
+   existing `lib/` untouched; a non-zero pip exit prints pip's output and exits 1. If removing the old `lib/` fails (e.g. Windows file locks), it prints
+   `close Fusion and rerun install.py`, removes `lib.tmp-*`, exits 1 and performs no later step. A
+   rename failure prints `rerun install.py` and exits 1; a rerun rebuilds. A missing `lib/` after
+   either failure is caught by the add-in's startup ImportError check (§ 3.1).
 3. Creates exactly one link to `De-Fusion/` in Fusion's AddIns folder
    (macOS `~/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns/De-Fusion`,
    Windows `%APPDATA%\Autodesk\Autodesk Fusion 360\API\AddIns\De-Fusion`): a symlink on macOS, a
@@ -632,7 +645,7 @@ Project/Folder`).
    `http://127.0.0.1:<port>/mcp?folder=<urllib.parse.quote("/".join(norm(folder)), safe="")>` and
    the last line reads `Append &profile=<items> to the url to select a profile.` `--folder` only
    changes the printed url; it does not write `config.toml`.
-`--uninstall` removes the link and `lib/`; it keeps `config.toml`.
+`--uninstall` removes the link, `lib/` and any `lib.tmp-*`; it keeps `config.toml`.
 
 The manifest sets `runOnStartup: true`, so after install the add-in loads with Fusion and appears
 once in Scripts and Add-Ins as `De-Fusion`. Users must not also add the repo path with "+".

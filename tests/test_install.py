@@ -27,8 +27,12 @@ def env(tmp_path, monkeypatch):
     calls = []
 
     def fake_pip(cmd):
+        if cmd[-1] == "--version":
+            return 0, "pip 24.0 from /x/pip (python 3.12)\n"
         calls.append(cmd)
-        (root / "De-Fusion" / "lib").mkdir(parents=True, exist_ok=True)
+        target = Path(cmd[cmd.index("--target") + 1])
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "pkg.txt").write_text("new")
         return 0, "ok"
 
     monkeypatch.setattr(install, "run_pip", fake_pip)
@@ -54,7 +58,7 @@ def test_newest_build_chosen(env):
     env.build("old", 1000)
     new = env.build("new", 2000)
     assert install.main([]) == 0
-    assert env.calls[0][0] == str(new)
+    assert env.calls[0][env.calls[0].index("--python") + 1] == str(new)
 
 
 def test_not_found_exits_2_with_paths(env, capsys):
@@ -67,18 +71,51 @@ def test_fusion_python_override_and_exact_pip_command(env):
     py = env.home / "mypy"
     py.write_text("")
     assert install.main(["--fusion-python", str(py)]) == 0
-    assert env.calls == [[str(py), "-m", "pip", "install", "--upgrade", "--no-compile", "--target",
-                          str(env.root / "De-Fusion/lib"), "-r", str(env.root / "requirements.lock")]]
+    tmp = env.root / ("De-Fusion/lib.tmp-%d" % os.getpid())
+    assert env.calls == [[sys.executable, "-m", "pip", "--python", str(py), "install", "--upgrade", "--no-compile",
+                          "--target", str(tmp), "-r", str(env.root / "requirements.lock")]]
 
 
-def test_lib_deleted_before_pip(env):
+def lib(env):
+    return env.root / "De-Fusion/lib"
+
+
+def test_success_replaces_lib_with_or_without_existing(env):
     env.build("b", 1)
-    stale = env.root / "De-Fusion/lib/stale.txt"
-    stale.parent.mkdir()
+    assert install.main([]) == 0
+    assert (lib(env) / "pkg.txt").read_text() == "new"
+    stale = lib(env) / "stale.txt"
     stale.write_text("")
-    install.run_pip = lambda cmd: (0, "")
+    assert install.main([]) == 0
+    assert not stale.exists() and (lib(env) / "pkg.txt").exists()
+    assert not list((env.root / "De-Fusion").glob("lib.tmp-*"))
+
+
+def selective_rmtree(monkeypatch, fail_on):
+    real = install.shutil.rmtree
+
+    def rm(path, *a, **k):
+        if fail_on(Path(path)):
+            raise OSError("locked")
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(install.shutil, "rmtree", rm)
+
+
+def test_stale_tmp_removed_before_pip(env):
+    env.build("b", 1)
+    stale = env.root / "De-Fusion/lib.tmp-1"
+    stale.mkdir()
     assert install.main([]) == 0
     assert not stale.exists()
+
+
+def test_stale_tmp_removal_error_ignored_pip_still_runs(env, monkeypatch):
+    env.build("b", 1)
+    (env.root / "De-Fusion/lib.tmp-1").mkdir()
+    selective_rmtree(monkeypatch, lambda p: p.name == "lib.tmp-1")
+    assert install.main([]) == 0
+    assert len(env.calls) == 1
 
 
 def test_link_created_and_existing_kept(env):
@@ -97,12 +134,66 @@ def test_directory_at_link_path_stops_with_exit_3(env, capsys):
     assert not env.cfg.exists()
 
 
-def test_pip_failure_exits_1_no_later_step(env, capsys):
+def test_pip_failure_exits_1_no_later_step_old_lib_and_tmp_untouched(env, capsys, monkeypatch):
     env.build("b", 1)
-    install.run_pip = lambda cmd: (1, "boom from pip")
+    assert install.main([]) == 0
+    env.link.unlink()
+    env.cfg.unlink()
+
+    def fail(cmd):
+        if cmd[-1] == "--version":
+            return 0, "pip 24.0"
+        (env.root / "De-Fusion" / ("lib.tmp-%d" % os.getpid())).mkdir()
+        return 1, "boom from pip"
+
+    monkeypatch.setattr(install, "run_pip", fail)
     assert install.main([]) == 1
     assert "boom from pip" in capsys.readouterr().err
     assert not env.link.is_symlink() and not env.cfg.exists()
+    assert (lib(env) / "pkg.txt").read_text() == "new"
+    assert not list((env.root / "De-Fusion").glob("lib.tmp-*"))
+
+
+@pytest.mark.parametrize("probe,found", [((1, ""), "none"), ((0, "pip garbage"), "none"), ((0, "pip 22.2"), "22.2")])
+def test_bad_probe_fails_closed(env, capsys, monkeypatch, probe, found):
+    env.build("b", 1)
+    lib(env).mkdir()
+    (lib(env) / "keep.txt").write_text("")
+    cmds = []
+    monkeypatch.setattr(install, "run_pip", lambda cmd: cmds.append(cmd) or probe)
+    assert install.main([]) == 1
+    err = capsys.readouterr().err
+    assert ("pip 22.3 or newer is required to install into Fusion's Python (found %s); run python -m pip install "
+            "--upgrade pip, or rerun install.py with a Python that has pip" % found) in err
+    assert cmds == [[sys.executable, "-m", "pip", "--version"]]
+    assert (lib(env) / "keep.txt").exists() and not env.link.is_symlink() and not env.cfg.exists()
+
+
+@pytest.mark.parametrize("out", ["pip 22.3.1 from /x", "pip 24.0b1 from /x"])
+def test_probe_versions_that_pass(env, monkeypatch, out):
+    env.build("b", 1)
+    monkeypatch.setattr(install, "run_pip",
+                        lambda cmd: (0, out) if cmd[-1] == "--version" else env.pip(cmd))
+    assert install.main([]) == 0
+
+
+def test_rmtree_of_old_lib_failure(env, capsys, monkeypatch):
+    env.build("b", 1)
+    lib(env).mkdir()
+    selective_rmtree(monkeypatch, lambda p: p.name == "lib")
+    assert install.main([]) == 1
+    assert "close Fusion and rerun install.py" in capsys.readouterr().err
+    assert not list((env.root / "De-Fusion").glob("lib.tmp-*"))
+    assert not env.link.is_symlink() and not env.cfg.exists()
+
+
+def test_rename_failure(env, capsys, monkeypatch):
+    env.build("b", 1)
+    monkeypatch.setattr(install.os, "rename", lambda *a: (_ for _ in ()).throw(OSError("no")))
+    assert install.main([]) == 1
+    err = capsys.readouterr().err.strip()
+    assert err == "rerun install.py" and "close Fusion" not in err
+    assert not list((env.root / "De-Fusion").glob("lib.tmp-*")) and not env.link.is_symlink()
 
 
 def test_config_written_if_absent_not_overwritten(env):
@@ -147,6 +238,14 @@ def test_uninstall_leaves_only_config(env):
     assert env.cfg.exists()
 
 
+def test_uninstall_removes_leftover_tmp(env):
+    env.build("b", 1)
+    install.main([])
+    (env.root / "De-Fusion/lib.tmp-x").mkdir()
+    assert install.main(["--uninstall"]) == 0
+    assert not list((env.root / "De-Fusion").glob("lib*")) and env.cfg.exists()
+
+
 def test_uninstall_refuses_foreign_directory(env):
     env.link.mkdir(parents=True)
     assert install.main(["--uninstall"]) == 3
@@ -158,7 +257,7 @@ def test_help_lists_flags_and_exit_codes(capsys):
         install.main(["--help"])
     assert e.value.code == 0
     out = capsys.readouterr().out
-    assert "--uninstall" in out and "--fusion-python" in out and "1 pip failed" in out and "3 link conflict" in out
+    assert "--uninstall" in out and "--fusion-python" in out and "1 pip failed or missing/older than 22.3" in out and "3 link conflict" in out
     assert "--folder" in out and "4 invalid --folder" in out
 
 

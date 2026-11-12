@@ -16,15 +16,17 @@ You need Python 3.10 or newer outside Fusion, and Fusion installed (macOS or Win
 python install.py
 ```
 
-The installer finds Fusion's bundled Python, installs the pinned libraries from `requirements.lock`
-into `De-Fusion/lib` (so the binary wheels match Fusion), links `De-Fusion/` into Fusion's AddIns
+The installer finds Fusion's bundled Python, then runs pip from the Python that runs `install.py`
+(pip 22.3+ required; Fusion's own Python has no pip) to install the pinned libraries from
+`requirements.lock` into `De-Fusion/lib` (built aside and swapped in only on success, so the binary
+wheels match Fusion and a failed run keeps your old `lib/`), links `De-Fusion/` into Fusion's AddIns
 folder, writes a default `config.toml` if you have none, and prints the `mcp.json` entry.
 
 - `--fusion-python PATH` uses that Python instead of the newest one it finds.
-- `--uninstall` removes the link and `lib/`. Your `config.toml` stays put, because we are not monsters.
+- `--uninstall` removes the link, `lib/` and any leftover `lib.tmp-*`. Your `config.toml` stays put, because we are not monsters.
 - `--folder "My Project/Parts"` prints the url with `?folder=My%20Project%2FParts` (see
   [Folder limit](#folder-limit)). It only changes the printed url; it does not write `config.toml`.
-- Exit codes: 0 success, 1 pip failed, 2 Fusion Python not found, 3 something else already lives at
+- Exit codes: 0 success, 1 pip failed or missing/older than 22.3 (the message says how to fix it), 2 Fusion Python not found, 3 something else already lives at
   the link path, 4 invalid `--folder` (checked before anything else).
 
 Then restart Fusion. The add-in starts with Fusion and shows up once in Scripts and Add-Ins as

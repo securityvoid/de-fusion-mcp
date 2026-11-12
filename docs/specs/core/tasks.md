@@ -121,7 +121,7 @@
 
 ## Phase 4 — Installer, live harness, live verification
 - [x] **TASK-CORE-020** [REQ-CORE-038, REQ-CORE-039]: Installer
-  - `install.py`: Fusion Python discovery (macOS `.../Versions/Current/bin/python3`, Windows `...\Python\python.exe`, newest build dir by mtime, `--fusion-python`, exit 2 with searched paths), pip into `De-Fusion/lib` from `requirements.lock` (non-zero exit: print pip's output, exit 1, no later step), single symlink/junction, `config.toml` write-if-absent using `defusion.config.DEFAULT_TOML`, `mcp.json` print (configured port, exact text of § 9) with optional `headers` and `?profile=` note, `--uninstall`; flags, `--help` and exit codes per § 9. Paths derive from `HOME`/`LOCALAPPDATA`/`APPDATA` so tests use temp dirs; pip is called through one function the tests replace.
+  - `install.py`: Fusion Python discovery (macOS `.../Versions/Current/bin/python3`, Windows `...\Python\python.exe`, newest build dir by mtime, `--fusion-python`, exit 2 with searched paths), pip into `De-Fusion/lib` from `requirements.lock` (pip step superseded by TASK-CORE-033; non-zero exit: print pip's output, exit 1, no later step), single symlink/junction, `config.toml` write-if-absent using `defusion.config.DEFAULT_TOML`, `mcp.json` print (configured port, exact text of § 9) with optional `headers` and `?profile=` note, `--uninstall`; flags, `--help` and exit codes per § 9. Paths derive from `HOME`/`LOCALAPPDATA`/`APPDATA` so tests use temp dirs; pip is called through one function the tests replace.
   - _Output_: `install.py`, `tests/test_install.py`
   - _Reuse_: `defusion.config.DEFAULT_TOML`; `pathlib`, `subprocess`, `os.symlink`, `mklink /J` via `subprocess` on Windows.
   - _Verify_: `pytest -q tests/test_install.py`
@@ -279,3 +279,11 @@
   - _Output_: `De-Fusion/defusion/types.py`, `tests/test_types_refs.py`, `tests/test_model_features.py`
   - _Reuse_: the TASK-CORE-007 `Axis`/`Profile` resolvers and sketch fakes
   - _Verify_: `pytest -q tests/test_types_refs.py && pytest -q`
+
+## Phase 9 — Installer pip
+- [x] **TASK-CORE-033** [REQ-CORE-038, REQ-CORE-039]: Installer runs pip from the running Python
+  - `install.py`: pip step per core design § 9 step 2 and REQ-CORE-038/039. Both the probe and the install call go through `run_pip`, so tests replace only `run_pip`. Probe non-zero, unparseable, or < 22.3 → § 9 message, exit 1.
+  - `tests/test_install.py`: exact command incl. option order; probe non-zero exit, `pip garbage`, `pip 22.2`, and no pip each → exact § 9 message, exit 1, no install call, old `lib/` intact, no link; probes `pip 22.3.1` and `pip 24.0b1` pass (exit 0); `pip 22.2`/`pip garbage` message has found text `22.2`/`none`; monkeypatched rmtree raising on stale-dir removal still reaches the pip call; build in `lib.tmp-<pid>`; stale `lib.tmp-*` removed before pip; temp removed on failed pip with old `lib/` untouched; success replaces `lib/` (also with no existing `lib/`); monkeypatched rename failure → exit 1, printed "rerun install.py", no `lib.tmp-*` left, no link; monkeypatched rmtree of old `lib/` raising → exit 1, message "close Fusion and rerun install.py", no `lib.tmp-*` left, no link; `--help` text "pip failed or missing/older than 22.3" asserted; `--uninstall` with a pre-created `lib.tmp-x` dir leaves only `config.toml`.
+  - _Output_: `install.py`, `tests/test_install.py`, `README.md` (install section pip, exit code 1, `--uninstall` `lib.tmp-*` text; must contain "22.3" and "lib.tmp-*")
+  - _Reuse_: the TASK-CORE-020 pip-call function and temp-dir fixtures
+  - _Verify_: `pytest -q tests/test_install.py`
