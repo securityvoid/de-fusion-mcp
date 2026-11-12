@@ -284,6 +284,31 @@ def test_axis_from_refs(model, ctx):
     assert code(Axis, {"token": model.sk.entityToken}, ctx).code == "INVALID_PARAMS"
 
 
+def test_axis_sketch_line_empty_sketch(model, ctx):
+    e = code(Axis, {"sketch": "Sketch1", "line": 0}, ctx)
+    assert e.message == "p: line 0 is out of range; sketch 'Sketch1' has no lines"
+
+
+def test_axis_sketch_line(model, ctx):
+    model.sk.add_line()
+    l1 = model.sk.add_line()
+    model.sk.add_line()
+    assert res(Axis, {"sketch": {"name": "Sketch1"}, "line": 1}, ctx) is l1
+    assert res(Axis, {"sketch": "Sketch1", "line": 2}, ctx) is model.sk.sketchCurves.sketchLines.item(2)
+    for n in (9, 3, -1):
+        e = code(Axis, {"sketch": "Sketch1", "line": n}, ctx)
+        assert e.code == "INVALID_PARAMS"
+        assert e.message == "p: line %d is out of range; sketch 'Sketch1' has 3 lines (0-2)" % n
+    assert code(Axis, {"sketch": {"token": model.b1.entityToken}, "line": 0}, ctx).code == "INVALID_PARAMS"
+
+
+@pytest.mark.parametrize("bad", [{"sketch": "s"}, {"sketch": "s", "line": True}, {"sketch": "s", "line": "1"},
+                                 {"sketch": "s", "line": 1, "x": 1}])
+def test_axis_sketch_line_bad_shape(bad):
+    with pytest.raises(ValidationError):
+        TypeAdapter(Axis).validate_python(bad)
+
+
 # ---- Profile (REQ-019) ------------------------------------------------------------------------------
 
 def test_profile(model, ctx):
@@ -296,6 +321,34 @@ def test_profile(model, ctx):
     assert code(Profile, {"sketch": "Sketch1"}, ctx).code == "INVALID_PARAMS"  # two profiles
     assert code(Profile, {"sketch": "Sketch1", "index": 2}, ctx).code == "INVALID_PARAMS"
     assert code(Profile, {"sketch": "Sketch1", "index": [0, 5]}, ctx).code == "INVALID_PARAMS"
+
+
+def test_profile_out_of_range_message_and_hint(model, ctx):
+    model.sk.add_profile()
+    model.sk.add_profile()
+    e = code(Profile, {"sketch": "Sketch1", "index": 2}, ctx)
+    assert e.message == "p: profile 2 is out of range; sketch 'Sketch1' has 2 profiles"
+    assert e.hints == ["use an index in 0-1"]
+
+
+def test_profile_list(model, ctx):
+    a0, a1 = model.sk.add_profile(), model.sk.add_profile()
+    sk2 = model.root.add_sketch("Sketch2")
+    b0 = sk2.add_profile()
+    coll = res(Profile, [{"sketch": "Sketch2"}, {"sketch": "Sketch1", "index": 1}], ctx)
+    assert isinstance(coll, core.ObjectCollection) and list(coll) == [b0, a1]
+    coll = res(Profile, [{"sketch": "Sketch1", "index": [1, 0]}, {"sketch": "Sketch2", "index": 0}], ctx)
+    assert list(coll) == [a1, a0, b0]
+    e = code(Profile, [{"sketch": "Sketch2"}, {"sketch": "Sketch1", "index": 5}], ctx)
+    assert e.code == "INVALID_PARAMS"
+    assert e.message == "entry 1: p: profile 5 is out of range; sketch 'Sketch1' has 2 profiles"
+    assert e.hints == ["use an index in 0-1"]
+
+
+@pytest.mark.parametrize("bad", [[], [{}], [{"sketch": "s", "index": -1}], ["s"]])
+def test_profile_list_bad_shape(bad):
+    with pytest.raises(ValidationError):
+        TypeAdapter(Profile).validate_python(bad)
 
 
 @pytest.mark.parametrize("bad", [{}, {"index": 0}, {"sketch": "s", "index": -1}, {"sketch": "s", "index": []},

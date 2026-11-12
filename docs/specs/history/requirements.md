@@ -27,6 +27,15 @@ details are in `docs/specs/history/design.md` (cited as "design §").
 - **DEP-HIS-004**: The document, inspect, assembly and script sets provide `document.create`,
   `document.close`, `inspect.list_bodies`, `inspect.physical_properties`, `inspect.bounds`,
   `assembly.create_component` and `script.execute_python`, used by the live scenarios.
+- **DEP-HIS-005**: Core `Axis` (core § 5.4, REQ-CORE-057) accepts `{"sketch": <Ref>, "line": n}` for a
+  `SketchLine` (`n` = index in that sketch's `sketchCurves.sketchLines`), so every `Axis` parameter
+  (`model.revolve.axis`, `circ_pattern.axis`, `rect_pattern.direction_*`, `move.rotate_axis`,
+  `construction_plane.axis`) takes it. Owned by core (TASK-CORE-032).
+- **DEP-HIS-006**: Core `Profile` (core § 5.4, REQ-CORE-058) accepts a list of `{"sketch", "index"}`
+  entries (profiles from several sketches, resolved to one `ObjectCollection`). Owned by core
+  (TASK-CORE-032).
+- **DEP-HIS-007**: The inspect set provides the importable `profile_index(profile)` (REQ-INS-017;
+  inspect design § 2.2), which `dump_recipe` uses for profile recovery.
 
 ## Functional Requirements
 
@@ -155,6 +164,28 @@ details are in `docs/specs/history/design.md` (cited as "design §").
   - _Acceptance_: Applying a dumped `model.extrude` step whose source name is `Base` and bodies
     `["Plate"]` yields a feature named `Base` and a body named `Plate`.
 
+- **REQ-HIS-023**: `dump_recipe` shall express a `SketchLine` axis (revolve axis, pattern
+  direction, rotation or construction-plane axis) as `{"sketch": {"name": s}, "line": n}` instead
+  of leaving the item unmapped, such that the replayed step uses the same line (design § 7.7;
+  DEP-HIS-005).
+  - _Acceptance_: A unit test with a revolve whose `axis` is the 2nd `SketchLine` of `Sketch1` yields
+    a `model.revolve` step with `axis` `{"sketch": {"name": "Sketch1"}, "line": 1}`, valid against the
+    registered `model.revolve` model; a `SketchLine` in a sketch in another component's occurrence
+    context yields an `unknown` step `"unnamed reference: SketchLine"`. Live `recipe_axis_line`
+    replays a revolve about a sketch line into a new document with equal body count, volume and
+    bounding box.
+- **REQ-HIS-024**: `dump_recipe` shall express an extrude or revolve `profile` as follows (design
+  § 7.7): all profiles matched in one sketch keep the `{"sketch", "index"}` form (index list for
+  several); profiles from several sketches become a list of `{"sketch", "index"}` entries, one per
+  sketch in first-seen order; a profile that cannot be matched by area and centroid leaves the item
+  unmapped (`unknown`, reason `"unnamed reference: Profile"`; `inspect.object_info` on the feature returns its
+  loop curves, REQ-INS-017) (DEP-HIS-006, DEP-HIS-007).
+  - _Acceptance_: Unit tests: an extrude over one profile in `Sketch1` and one in `Sketch2` yields
+    `profile` `[{"sketch": {"name": "Sketch1"}, "index": 0}, {"sketch": {"name": "Sketch2"},
+    "index": 1}]`, valid against the registered model; a fake profile with no area/centroid match
+    yields an `unknown` step `"unnamed reference: Profile"`. Live `recipe_profiles` replays a two-sketch extrude
+    into a new document with equal body count, volume and bounding box.
+
 ### Cross-cutting
 - **REQ-HIS-021**: Every history action except `undo` and `apply_recipe_step` shall require a
   parametric design and return `WRONG_DESIGN_TYPE` in a direct design; every action shall return
@@ -163,7 +194,8 @@ details are in `docs/specs/history/design.md` (cited as "design §").
     `WRONG_DESIGN_TYPE`; `group_add` on a fake timeline without `timelineGroups` returns
     `UNSUPPORTED`.
 - **REQ-HIS-022**: The history module shall ship live scenarios covering every action, including a
-  recipe round trip of a small part with a coil, and one coil-only round trip per `coil_type`, each
-  replayed into a new document with equal body count, volume and bounding box (design § 9.2).
+  recipe round trip of a small part with a coil, one coil-only round trip per `coil_type`, and
+  the sketch-line axis and multi-sketch profile round trips, each replayed into a new document with
+  equal body count, volume and bounding box (design § 9.2).
   - _Acceptance_: `python scripts/live_check.py --profile full --only history` prints only `PASS`
     lines and exits 0.

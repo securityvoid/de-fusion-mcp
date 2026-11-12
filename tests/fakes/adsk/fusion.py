@@ -1,4 +1,6 @@
 """Fake ``adsk.fusion``: a design with components and the entity kinds core resolves."""
+from types import SimpleNamespace
+
 from . import core
 from .core import BoundingBox3D, Collection, Entity, Point3D, UnitsManager, _Fake
 
@@ -118,9 +120,31 @@ class MeshBody(Entity):
         self.parentComponent = component
 
 
+class ProfileCurve(_Fake):
+    def __init__(self, geometry, geometry_type):
+        self.geometry, self.geometryType = geometry, geometry_type
+
+
+class ProfileLoop(_Fake):
+    def __init__(self, curves=()):
+        self.profileCurves = Collection(curves)
+
+
+class _AreaProperties(_Fake):
+    def __init__(self, area, centroid):
+        self.area, self.centroid = area, centroid
+
+
 class Profile(Entity):
-    def __init__(self):
+    profileLoops = Collection()  # tests assign per-instance
+
+    def __init__(self, area=1.0, centroid=(0, 0, 0)):
         super().__init__(None)
+        self.parentSketch = None
+        self.area, self.centroid = area, centroid
+
+    def areaProperties(self):
+        return _AreaProperties(self.area, Point3D(*self.centroid))
 
 
 class SketchCurve(Entity):
@@ -130,7 +154,7 @@ class SketchCurve(Entity):
 
 
 class SketchLine(SketchCurve):
-    pass
+    geometry = None  # tests set a Line3D (sketch space)
 
 
 class SketchCircle(SketchCurve):
@@ -143,6 +167,14 @@ class SketchPoint(Entity):
         self.parentSketch = sketch
 
 
+class _SketchCurves(_Fake):
+    def __init__(self, sketch):
+        self._sketch = sketch
+
+    sketchLines = property(lambda s: Collection(s._sketch._lines))
+    count = property(lambda s: len(s._sketch._lines))
+
+
 class Sketch(Entity):
     """``origin`` is the sketch plane origin (cm); axes are aligned with model axes."""
 
@@ -151,21 +183,29 @@ class Sketch(Entity):
         self.parentComponent = component
         self._origin = origin
         self._profiles = []
+        self._lines = []
+        self.sketchCurves = _SketchCurves(self)
 
     profiles = property(lambda s: Collection(s._profiles))
+
+    def sketchToModelSpace(self, p):
+        o = self._origin
+        return Point3D(p.x + o[0], p.y + o[1], p.z + o[2])
 
     def modelToSketchSpace(self, p):
         o = self._origin
         return Point3D(p.x - o[0], p.y - o[1], p.z - o[2])
 
-    def add_profile(self):
-        p = Profile()
+    def add_profile(self, **kw):
+        p = Profile(**kw)
+        p.parentSketch = self
         self._profiles.append(p)
         self.parentComponent._design._register(p)
         return p
 
     def add_line(self):
         c = SketchLine(self)
+        self._lines.append(c)
         self.parentComponent._design._register(c)
         return c
 
@@ -188,6 +228,10 @@ class Feature(Entity):
 
 class ExtrudeFeature(Feature):
     pass
+
+
+class RevolveFeature(Feature):
+    axis = None  # tests set a ConstructionAxis, BRepEdge or SketchLine
 
 
 class ConstructionPlane(Entity):

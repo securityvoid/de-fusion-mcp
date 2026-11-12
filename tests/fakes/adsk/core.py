@@ -128,8 +128,43 @@ class Curve3DTypes:
     InfiniteLine3DCurveType = 6
 
 
-class Line3D(_Fake):
+class _Geo(_Fake):
+    """Geometry fake: keyword arguments become attributes."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class Line3D(_Geo):
     pass
+
+
+class Arc3D(_Geo):
+    pass
+
+
+class Circle3D(_Geo):
+    pass
+
+
+class InfiniteLine3D(_Geo):
+    pass
+
+
+class CurveEvaluator3D(_Fake):
+    """``extents`` (min, max), ``fn(t)`` -> (x, y, z), and ``ends`` (start, end) points."""
+
+    def __init__(self, extents=(0.0, 1.0), fn=None, ends=None):
+        self._extents, self._fn, self._ends = extents, fn, ends
+
+    def getParameterExtents(self):
+        return (True, self._extents[0], self._extents[1])
+
+    def getPointsAtParameters(self, params):
+        return (True, [Point3D(*self._fn(t)) for t in params])
+
+    def getEndPoints(self):
+        return (True, self._ends[0], self._ends[1])
 
 
 class Plane(_Fake):
@@ -696,6 +731,15 @@ class Documents(Collection):
         return None if "open" in self.fail else self._new(dataFile.name, dataFile)
 
 
+class UploadStates:
+    UploadProcessing, UploadFinished, UploadFailed = range(3)
+
+
+class DataFileFuture(_Fake):
+    def __init__(self, uploadState, dataFile):
+        self.uploadState, self.dataFile = uploadState, dataFile
+
+
 class DataUser(_Fake):
     def __init__(self, displayName):
         self.displayName = displayName
@@ -746,11 +790,23 @@ class DataFile(_Fake):
         return True
 
 
+class _UnreadableFile(_Fake):
+    """A folder item whose properties raise when read."""
+
+    @property
+    def id(self):
+        raise RuntimeError("unreadable")
+
+    name = id
+
+
 class DataFolder(_Fake):
     def __init__(self, name, parentFolder, parentProject):
         self.name, self.parentFolder, self.parentProject = name, parentFolder, parentProject
         self.id = parentProject._data._new_id("folder")
         self._folders, self._files = [], []
+        self.upload, self.upload_calls = "finish", []
+        self.upload_extra, self.upload_unlisted = [], False  # more files a finished upload creates
         parentProject._data._folders[self.id] = self
 
     isRoot = property(lambda s: s.parentFolder is None)
@@ -765,6 +821,25 @@ class DataFolder(_Fake):
         return df
 
     add_file = _add_file
+
+    def uploadFile(self, fileName):
+        """Record the call; ``upload`` is "finish" (default), "fail", "hang" or "none" (returns None)."""
+        import pathlib
+
+        self.upload_calls.append(fileName)
+        mode = self.upload
+        if mode == "none":
+            return None
+        p = pathlib.Path(fileName)
+        df = None if mode in ("fail", "hang") else self._add_file(p.stem, p.suffix.lstrip("."))
+        if df is not None:  # a multi-document f3z: Fusion returns one of the created files, a child
+            for name in self.upload_extra:
+                df = self._add_file(name, "f3d")
+            if self.upload_unlisted:
+                self._files.append(_UnreadableFile())
+        state = {"finish": UploadStates.UploadFinished, "fail": UploadStates.UploadFailed,
+                 "hang": UploadStates.UploadProcessing}[mode]
+        return DataFileFuture(state, df)
 
     def add_folder(self, name):
         f = DataFolder(name, self, self.parentProject)

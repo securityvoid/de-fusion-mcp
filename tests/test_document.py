@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from adsk import core, fusion
 
-from defusion import actions, units
+from defusion import actions, guard, units
 from defusion.actions import call
 from defusion.context import Ctx
 import defusion
@@ -53,6 +53,14 @@ def run(act, params=None, units=None, **kw):
     if units is not None:
         args["units"] = units
     return call("document", args, allowed, ["all"], **kw)
+
+
+@pytest.fixture(autouse=True)
+def fast_clean_guard(monkeypatch):
+    monkeypatch.setattr(guard, "VERIFY_DELAY", 0)
+    guard.UNLOCKED.clear()
+    yield
+    guard.UNLOCKED.clear()
 
 
 @pytest.fixture
@@ -335,6 +343,120 @@ def test_doc_summary_tolerates_dataFile_error(live):
     live.scratch.__class__ = Boom
     r = ok(run("list_open"))
     assert r["items"][0]["file"] is None
+
+
+def _registered(live, read_only=False):
+    """Scratch saved to Proj and registered in guard.UNLOCKED, as ensure_editable leaves it."""
+    df = live.root.add_file("Reg")
+    df.isReadOnly = read_only
+    live.scratch.dataFile = df
+    live.app.activeDocument = live.scratch
+    guard.UNLOCKED[df.id] = "Scratch"
+    return df
+
+
+def test_close_relock_registered_document(live, monkeypatch):
+    df = _registered(live)
+    log = []
+    real_close = live.scratch.close
+    monkeypatch.setattr(live.scratch, "close", lambda save: (log.append(("close", save)), real_close(save))[1])
+    real_cmd = live.app.executeTextCommand
+    monkeypatch.setattr(live.app, "executeTextCommand", lambda c: (log.append(c), real_cmd(c))[1])
+    r = one(run("close", {"confirm": True}))
+    assert r["relocked"] is True and "warnings" not in r and df.isReadOnly is True
+    assert live.app.commands == ["Commands.Start ActiveDocumentDeactivateCommand"]
+    assert log == ["Commands.Start ActiveDocumentDeactivateCommand", ("close", False)]
+    assert ("close", False) in live.scratch.calls and guard.UNLOCKED == {}
+
+
+def test_close_relock_activates_document_to_lock(live):
+    _registered(live)
+    other = live.app.documents._new("Other")
+    live.app.activeDocument = other
+    r = one(run("close", {"documents": ["Scratch"], "confirm": True}))
+    assert r["relocked"] is True and live.app.activeDocument is other
+
+
+def test_close_already_read_only_via_fresh_lookup_issues_no_command(live):
+    _registered(live, read_only=True)
+    r = one(run("close", {"confirm": True}))
+    assert r["relocked"] is True and live.app.commands == [] and guard.UNLOCKED == {}
+
+
+def test_close_lookup_raises_not_relocked(live):
+    df = _registered(live, read_only=True)
+    live.app.data.findFileById = lambda i: (_ for _ in ()).throw(RuntimeError("gone"))
+    r = one(run("close", {"confirm": True}))
+    assert r["relocked"] is False and df.isReadOnly is True  # df fallback is not an observation
+    assert "Scratch" in r["warnings"][0] and "document.set_read_only" in r["warnings"][0]
+    assert ("close", False) in live.scratch.calls and guard.UNLOCKED == {}
+
+
+def test_close_lookup_none_while_own_file_read_only_not_relocked(live):
+    _registered(live, read_only=True)
+    live.app.data.findFileById = lambda i: None
+    r = one(run("close", {"confirm": True}))
+    assert r["relocked"] is False and "document.set_read_only" in r["warnings"][0]
+    assert guard.UNLOCKED == {}
+
+
+def test_close_lock_never_observed_still_closes(live):
+    _registered(live)
+    live.app.read_only_reads = None
+    r = one(run("close", {"confirm": True}))
+    assert r["relocked"] is False and "Scratch" in r["warnings"][0]
+    assert ("close", False) in live.scratch.calls and guard.UNLOCKED == {}
+
+
+def test_close_command_raises_still_closes(live):
+    _registered(live)
+    live.app.text_command_errors["Deactivate"] = RuntimeError("boom")
+    r = one(run("close", {"confirm": True}))
+    assert r["relocked"] is False and r["warnings"]
+    assert ("close", False) in live.scratch.calls and guard.UNLOCKED == {}
+
+
+def test_close_outside_folder_limit_still_closes(limited):
+    df = limited.proj.rootFolder.add_file("Out")  # root is outside the limit
+    limited.scratch.dataFile = df
+    limited.app.activeDocument = limited.scratch
+    guard.UNLOCKED[df.id] = "Scratch"
+    r = one(limited.run("close", {"confirm": True}))
+    assert r["relocked"] is False and r["warnings"] and limited.app.commands == []
+    assert ("close", False) in limited.scratch.calls and guard.UNLOCKED == {}
+
+
+def test_close_unregistered_saved_document_untouched(live):
+    live.scratch.dataFile = live.root.add_file("Plain")
+    live.app.activeDocument = live.scratch
+    r = one(run("close", {"confirm": True}))
+    assert r["relocked"] is False and "warnings" not in r and live.app.commands == []
+
+
+def test_close_never_saved_document_untouched(live):
+    r = one(run("close", {"confirm": True}))
+    assert r["relocked"] is False and "warnings" not in r and live.app.commands == []
+
+
+def test_close_failure_still_drops_registry_entry(live):
+    _registered(live)
+    live.scratch.fail.add("close")
+    assert eerr(run("close", {"confirm": True}))["code"] == "FUSION_ERROR"
+    assert guard.UNLOCKED == {}
+
+
+def test_close_upload_pending_warns_and_drops(live):
+    live.scratch.saveAs("N", live.root, "", "")  # fake dataFile has a local-path id until finished
+    live.scratch.dataFile.id = "/tmp/local.f3d"
+    live.app.activeDocument = live.scratch
+    guard.UNLOCKED["urn:x"] = "N"
+    r = one(run("close", {"confirm": True}))
+    assert r["relocked"] is False and "N is" in r["warnings"][0] and "document.set_read_only" in r["warnings"][0]
+    assert ("close", False) in live.scratch.calls and guard.UNLOCKED == {} and live.app.commands == []
+
+
+def test_close_help_mentions_relocked(live):
+    assert "relocked" in ok(run("help", {"action": "close"}))["help"]
 
 
 def test_set_name(live):
@@ -764,6 +886,316 @@ def test_export_unsupported_members(design_env, monkeypatch):
     one(run("export", {"paths": [str(e.out / "d.stl")]}))
 
 
+# --- datafile_upload (design § 6.13, REQ-DOC-029) -----------------------------------------------------------
+
+
+@pytest.fixture
+def up(live, tmp_path):
+    """Local .f3d/.f3z files in ``tmp_path``; ``live`` plus ``local(name)`` giving a path."""
+    def local(name):
+        (tmp_path / name).write_text("x")
+        return str(tmp_path / name)
+
+    live.local = local
+    return live
+
+
+def _docs_opened(live):
+    return [c for c in live.app.documents.calls if c[0] == "open"]
+
+
+def test_datafile_upload_entry_shape_and_default_folder(up):
+    r = one(run("datafile_upload", {"paths": [up.local("Part.f3d")]}))
+    df = next(f for f in up.root._files if f.name == "Part")
+    assert r == {"id": df.id, "name": "Part", "path": "Proj/Part", "version_number": 1, "read_only": True}
+    assert up.root.upload_calls == [str(up.local("Part.f3d"))] and df.isReadOnly is True
+    assert df.fileExtension == "f3d"
+
+
+def test_datafile_upload_f3z_into_folder_by_path_and_id(up):
+    one(run("datafile_upload", {"paths": [up.local("Asm.f3z")], "folder": "Proj/Sub"}))
+    assert [f.name for f in up.sub._files] == ["Asm"] and up.sub._files[0].fileExtension == "f3z"
+    one(run("datafile_upload", {"paths": [up.local("Two.f3d")], "folder": up.sub.id}))
+    assert [f.name for f in up.sub._files] == ["Asm", "Two"]
+
+
+def test_datafile_upload_locks_through_transient_document_and_restores_state(up):
+    one(run("datafile_upload", {"paths": [up.local("Part.f3d")]}))
+    assert up.app.commands == ["Commands.Start ActiveDocumentDeactivateCommand"]
+    assert len(_docs_opened(up)) == 1
+    assert [d.name for d in up.app.documents] == ["Scratch"] and up.app.activeDocument is up.scratch
+    assert up.root._files[0].isReadOnly is True and guard.UNLOCKED == {}
+
+
+def test_datafile_upload_read_only_false_opens_nothing(up):
+    r = one(run("datafile_upload", {"paths": [up.local("Part.f3d")], "read_only": False}))
+    assert r["read_only"] is False and up.app.commands == [] and up.app.documents.calls == []
+    assert up.root._files[0].isReadOnly is False
+
+
+def test_datafile_upload_lock_never_observed(up):
+    up.app.read_only_reads = None
+    e = eerr(run("datafile_upload", {"paths": [up.local("Part.f3d")]}))
+    df = up.root._files[0]
+    assert e["code"] == "READ_ONLY_NOT_APPLIED" and df.id in e["message"] and "Proj/Part" in e["message"]
+    assert "document.set_read_only" in e["hints"][0]
+    assert [d.name for d in up.app.documents] == ["Scratch"] and up.app.activeDocument is up.scratch
+
+
+def test_datafile_upload_raising_lock_is_not_applied_and_cleans_up(up, monkeypatch):
+    def boom(*a):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(guard, "set_read_only", boom)
+    e = eerr(run("datafile_upload", {"paths": [up.local("Part.f3d")]}))
+    assert e["code"] == "READ_ONLY_NOT_APPLIED" and up.root._files[0].id in e["message"] and "Proj/Part" in e["message"]
+    assert [d.name for d in up.app.documents] == ["Scratch"] and up.app.activeDocument is up.scratch
+
+
+def test_datafile_upload_transient_open_failure(up):
+    up.app.documents.fail.add("open")
+    e = eerr(run("datafile_upload", {"paths": [up.local("Part.f3d")]}))
+    assert e["code"] == "READ_ONLY_NOT_APPLIED" and "could not open it to lock it" in e["message"]
+    assert "document.set_read_only" in e["hints"][0] and len(up.root._files) == 1
+
+
+def test_datafile_upload_warns_when_temporary_close_or_activate_fails(up, monkeypatch):
+    real_open = up.app.documents.open
+
+    def open_failing_close(df, visible=True):
+        doc = real_open(df, visible)
+        doc.fail.add("close")
+        return doc
+
+    monkeypatch.setattr(up.app.documents, "open", open_failing_close)
+    r = one(run("datafile_upload", {"paths": [up.local("A.f3d")]}))
+    assert r["read_only"] is True and r["warnings"] == ["closing the temporary document failed (A)"]
+    up.scratch.fail.add("activate")
+    up.app.documents.item(1).close(False)  # drop the stuck transient document
+    r = one(run("datafile_upload", {"paths": [up.local("B.f3d")]}))
+    assert r["read_only"] is True and "re-activating the original document failed (Scratch)" in r["warnings"]
+
+
+def test_datafile_upload_temporary_close_and_activate_raising_warn(up, monkeypatch):
+    real_open = up.app.documents.open
+
+    def open_raising_close(df, visible=True):
+        doc = real_open(df, visible)
+
+        def boom(save):
+            raise RuntimeError("boom")
+
+        doc.close = boom
+        return doc
+
+    monkeypatch.setattr(up.app.documents, "open", open_raising_close)
+
+    def boom_activate():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(up.scratch, "activate", boom_activate)
+    r = one(run("datafile_upload", {"paths": [up.local("A.f3d")]}))
+    assert r["read_only"] is True
+    assert "closing the temporary document failed (A)" in r["warnings"]
+    assert "re-activating the original document failed (Scratch)" in r["warnings"]
+
+
+def test_datafile_upload_deactivates_before_closing_temporary_document(up, monkeypatch):
+    log = []
+    real_open = up.app.documents.open
+
+    def open_logged(df, visible=True):
+        doc = real_open(df, visible)
+        real_close = doc.close
+
+        def close(save):
+            log.append("close")
+            return real_close(save)
+
+        doc.close = close
+        return doc
+
+    monkeypatch.setattr(up.app.documents, "open", open_logged)
+    real_cmd = up.app.executeTextCommand
+    monkeypatch.setattr(up.app, "executeTextCommand", lambda c: (log.append(c), real_cmd(c))[1])
+    one(run("datafile_upload", {"paths": [up.local("A.f3d")]}))
+    assert log == [LOCK, "close"]
+
+
+def test_datafile_upload_unlistable_folder_fails_before_uploading(up, monkeypatch):
+    def boom(self):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(type(up.root), "dataFiles", property(boom))
+    e = eerr(run("datafile_upload", {"paths": [up.local("A.f3d")]}))
+    assert e["code"] == "FUSION_ERROR" and "could not list" in e["message"]
+    assert up.root.upload_calls == [] and up.app.documents.calls == []
+
+
+def test_datafile_upload_upload_failures_are_fusion_errors(up, monkeypatch):
+    up.root.upload = "fail"
+    e = eerr(run("datafile_upload", {"paths": [up.local("A.f3d")]}))
+    assert e["code"] == "FUSION_ERROR" and "A.f3d" in e["message"] and "failed" in e["message"]
+    up.root.upload = "none"
+    assert eerr(run("datafile_upload", {"paths": [up.local("B.f3d")]}))["code"] == "FUSION_ERROR"
+    monkeypatch.setattr(doc_mod, "UPLOAD_WAIT", 0)
+    up.root.upload = "hang"
+    e = eerr(run("datafile_upload", {"paths": [up.local("C.f3d")]}))
+    assert e["code"] == "FUSION_ERROR" and "did not finish" in e["message"]
+    assert "document.list_folders" in e["hints"][0] and "document.set_read_only" in e["hints"][0]
+    assert up.root._files == [] and up.app.documents.calls == []
+
+
+def test_datafile_upload_long_list_with_hanging_future_becomes_a_job(up, monkeypatch):
+    monkeypatch.setattr(doc_mod, "UPLOAD_WAIT", 0.6)
+    up.root.upload = "hang"
+    act = next(a for a in actions.registry() if (a.tool, a.name) == ("document", "datafile_upload"))
+    monkeypatch.setattr(act, "timeout", 0.3)
+    r = ok(run("datafile_upload", {"paths": [up.local("a.f3d"), up.local("b.f3d"), up.local("c.f3d")]}))
+    assert r["status"] == "running" and r["job_id"]
+    import time
+
+    end = time.monotonic() + 10
+    while time.monotonic() < end and actions.dispatch.get_job(r["job_id"])["state"] == "running":
+        time.sleep(0.05)
+    job = actions.dispatch.get_job(r["job_id"])
+    assert job["state"] == "done" and job["result"]["failed"] == 3
+
+
+def test_datafile_upload_path_and_name_errors(up):
+    for path, code in (("/no/such/x.f3d", "NOT_FOUND"), ("rel.f3d", "INVALID_PARAMS"),
+                       (up.local("x.step"), "INVALID_PARAMS")):
+        e = eerr(run("datafile_upload", {"paths": [path]}))
+        assert e["code"] == code and (code == "NOT_FOUND" or e["hints"]), (path, e)
+    up.root.add_file("Taken")
+    e = eerr(run("datafile_upload", {"paths": [up.local("Taken.f3d")]}))
+    assert e["code"] == "INVALID_PARAMS" and "Taken" in e["message"] and "rename" in e["hints"][0]
+    assert up.root.upload_calls == []
+
+
+def test_datafile_upload_repeated_stem_is_one_upload(up, tmp_path, monkeypatch):
+    monkeypatch.setattr(doc_mod, "UPLOAD_WAIT", 0)
+    up.root.upload = "hang"  # the first entry leaves no file behind, so only the stem check can catch the second
+    (tmp_path / "sub").mkdir()
+    other = tmp_path / "sub" / "Same.f3z"
+    other.write_text("x")
+    r = ok(run("datafile_upload", {"paths": [up.local("Same.f3d"), str(other)]}))
+    assert (r["ok"], r["failed"]) == (0, 2)
+    e = r["results"][1]["error"]
+    assert e["code"] == "INVALID_PARAMS" and "appears twice" in e["message"] and e["hints"]
+    assert len(up.root.upload_calls) == 1
+
+
+def test_datafile_upload_unsupported_without_upload_file(up, monkeypatch):
+    monkeypatch.delattr(core.DataFolder, "uploadFile")
+    assert eerr(run("datafile_upload", {"paths": [up.local("A.f3d")]}))["code"] == "UNSUPPORTED"
+
+
+def test_datafile_upload_folder_default_without_active_project(live, tmp_path):
+    live.app.data.activeProject = None
+    f = tmp_path / "A.f3d"
+    f.write_text("x")
+    e = err(run("datafile_upload", {"paths": [str(f)]}))
+    assert e["code"] == "INVALID_PARAMS" and "no active project" in e["message"] and e["hints"]
+
+
+def _f3z(up, extra=("Child",), **kw):
+    up.root.upload_extra = list(extra)
+    for k, v in kw.items():
+        setattr(up.root, k, v)
+    return up.local("Asm.f3z")
+
+
+def test_datafile_upload_multi_file_returns_stem_root_with_created_and_locks_all(up):
+    r = one(run("datafile_upload", {"paths": [_f3z(up, ("Child", "Leaf"))]}))
+    files = {f.name: f for f in up.root._files}
+    assert r["name"] == "Asm" and r["id"] == files["Asm"].id and r["read_only"] is True
+    assert [c["name"] for c in r["created"]] == ["Asm", "Child", "Leaf"]
+    assert r["created"][1] == {"id": files["Child"].id, "name": "Child", "path": "Proj/Child"}
+    assert all(f.isReadOnly is True for f in files.values()) and len(_docs_opened(up)) == 3
+    assert [d.name for d in up.app.documents] == ["Scratch"] and up.app.activeDocument is up.scratch
+
+
+def test_datafile_upload_single_file_has_no_created(up):
+    assert "created" not in one(run("datafile_upload", {"paths": [up.local("Part.f3d")]}))
+
+
+def test_datafile_upload_multi_file_root_falls_back_to_returned_file(up):
+    up.root.upload_extra = ["Other"]
+    up.root.upload = "finish"
+    f = up.local("Asm.f3z")
+    orig = up.root.uploadFile
+
+    def rename(name):
+        fut = orig(name)
+        next(x for x in up.root._files if x.name == "Asm").name = "Renamed"
+        return fut
+
+    up.root.uploadFile = rename
+    r = one(run("datafile_upload", {"paths": [f]}))
+    assert r["name"] == "Other" and [c["name"] for c in r["created"]] == ["Other", "Renamed"]
+
+
+def test_datafile_upload_multi_file_one_never_locks_names_it(up, monkeypatch):
+    real = guard.set_read_only
+
+    def pick(ctx, doc, flag, lookup):
+        if doc.name == "Child":
+            return False
+        return real(ctx, doc, flag, lookup)
+
+    monkeypatch.setattr(guard, "set_read_only", pick)
+    e = eerr(run("datafile_upload", {"paths": [_f3z(up)]}))
+    child = next(f for f in up.root._files if f.name == "Child")
+    assert e["code"] == "READ_ONLY_NOT_APPLIED" and child.id in e["message"] and "Proj/Child" in e["message"]
+    assert "Proj/Asm" not in e["message"] and up.app.activeDocument is up.scratch
+
+
+def test_datafile_upload_unlisted_created_file(up):
+    e = eerr(run("datafile_upload", {"paths": [_f3z(up, (), upload_unlisted=True)]}))
+    assert e["code"] == "READ_ONLY_NOT_APPLIED" and "an unlisted file in Proj" in e["message"]
+    calls = len(up.root.upload_calls)
+    e = eerr(run("datafile_upload", {"paths": [up.local("Other.f3d")], "read_only": False}))
+    assert e["code"] == "FUSION_ERROR" and len(up.root.upload_calls) == calls  # the unlisted item persists
+
+
+def test_datafile_upload_waits_for_cloud_ids_of_created_files(up, monkeypatch):
+    f = _f3z(up, ())
+    orig, made = up.root.uploadFile, []
+
+    def upload(name):
+        fut = orig(name)
+        made.append(up.root._add_file("Late", "f3d", pending=True))  # listed with a local id at first
+        return fut
+
+    up.root.uploadFile = upload
+    sleeps = []
+
+    def tick(_):
+        sleeps.append(1)
+        made[0].finish_upload()
+
+    monkeypatch.setattr(doc_mod.time, "sleep", tick)
+    r = one(run("datafile_upload", {"paths": [f]}))
+    assert sleeps and [c["name"] for c in r["created"]] == ["Asm", "Late"] and r["created"][1]["id"].startswith("urn:")
+
+
+def test_datafile_upload_none_future_has_list_folders_hint(up):
+    up.root.upload = "none"
+    e = eerr(run("datafile_upload", {"paths": [up.local("A.f3d")]}))
+    assert "document.list_folders" in e["hints"][0] and "retry" in e["hints"][0]
+
+
+def test_folder_limit_datafile_upload_defaults_to_limit_and_limits_folder(limited):
+    f = limited.out / "A.f3d"
+    f.write_text("x")
+    r = one(limited.run("datafile_upload", {"paths": [str(f)]}))
+    assert r["path"] == "P/A/A" and limited.a.upload_calls == [str(f)]
+    e = err(limited.run("datafile_upload", {"paths": [str(f)], "folder": "P/X"}))
+    assert e["code"] == "NOT_ALLOWED" and limited.x.upload_calls == []
+    assert one(limited.run("datafile_upload", {"paths": [str(f)], "folder": "P/A/B"}))["path"] == "P/A/B/A"
+
+
 # --- import and mesh import ----------------------------------------------------------------------------------
 
 
@@ -820,6 +1252,18 @@ def test_import_2d(live, src):
     kind, path = _im(live).calls[2][:2]
     assert kind == "create_svg" and _im(live).calls[3][1].planarEntity is design.rootComponent.xZConstructionPlane
     assert eerr(run("import", {"paths": [src["dxf"]], "target": "new_document"}))["code"] == "INVALID_PARAMS"
+
+
+def test_import_rejects_f3z_before_any_fusion_call(live, src, tmp_path):
+    z = tmp_path / "m.f3z"
+    z.write_text("x")
+    for params in ({"paths": [str(z)]}, {"paths": [src["f3d"]], "format": "f3z"},
+                   {"paths": [str(z)], "format": "f3d"}, {"paths": [str(z)], "format": "f3z", "target": "active"}):
+        e = eerr(run("import", params))
+        assert e["code"] == "INVALID_PARAMS" and "use document.datafile_upload then document.open" in e["message"], params
+    assert _im(live).calls == []
+    one(run("import", {"paths": [src["f3d"]]}))
+    assert [c[0] for c in _im(live).calls] == ["create_f3d", "importToNewDocument"]
 
 
 def test_import_param_errors(live, src, tmp_path):
@@ -903,8 +1347,8 @@ EXPECTED = {
     "save_as": ("write", 180), "set_name": ("write", 30), "advance_to_latest": ("write", 180),
     "update_all_references": ("write", 180), "set_read_only": ("write", 60),
     "datafile_set": ("write", 60), "datafile_refresh": ("write", 60), "datafile_copy": ("write", 120),
-    "datafile_move": ("write", 120), "import": ("write", 300), "import_mesh": ("write", 180),
-    "close": ("destructive", 60), "datafile_delete": ("destructive", 60),
+    "datafile_move": ("write", 120), "datafile_upload": ("write", 300), "import": ("write", 300), "import_mesh": ("write", 180),
+    "close": ("destructive", 120), "datafile_delete": ("destructive", 60),
 }
 
 
@@ -934,6 +1378,7 @@ def test_no_action_opens_a_transaction(live, src):
         ("datafile_copy", {"files": [df.id], "folder": "Proj"}),
         ("datafile_move", {"files": [gone.id], "folder": "Proj/Sub"}),
         ("datafile_delete", {"files": [gone.id], "confirm": True}),
+        ("datafile_upload", {"paths": [src["f3d"]]}),
         ("import_mesh", {"paths": [src["stl"]]}), ("import", {"paths": [src["step"]]}), ("close", {"confirm": True}),
     ]
     assert {n for n, _ in calls} == set(EXPECTED)
@@ -1078,7 +1523,7 @@ EDITS = {
     "create": "none", "open": "none", "activate": "none", "save": "action", "save_as": "none",
     "set_name": "none", "advance_to_latest": "action", "update_all_references": "action",
     "set_read_only": "none", "datafile_set": "none", "datafile_refresh": "none", "datafile_copy": "none",
-    "datafile_move": "none", "import": "action", "import_mesh": "active", "close": "none",
+    "datafile_move": "none", "datafile_upload": "none", "import": "action", "import_mesh": "active", "close": "none",
     "datafile_delete": "none",
 }
 
@@ -1087,7 +1532,8 @@ LIST_PARAMS = {
     "export": ("paths", "path"), "open": ("files", "file"), "close": ("documents", "document"),
     "datafile_set": ("files", "file"), "datafile_refresh": ("files", "file"),
     "datafile_copy": ("files", "file"), "datafile_move": ("files", "file"),
-    "datafile_delete": ("files", "file"), "import": ("paths", "path"), "import_mesh": ("paths", "path"),
+    "datafile_delete": ("files", "file"), "datafile_upload": ("paths", "path"),
+    "import": ("paths", "path"), "import_mesh": ("paths", "path"),
     "save": ("documents", "document"), "save_as": ("documents", "name"), "set_read_only": ("documents", "document"),
 }
 
@@ -1108,6 +1554,8 @@ def lists(design_env, src):
     e.app.documents._new("DB", e.root.add_file("DB"))
     e.app.activeDocument = e.scratch
     out = str(e.out)
+    for n in ("u1", "u3"):
+        (e.out / (n + ".f3d")).write_text("x")
     gone = "Proj/Gone"
     files3 = ["Proj/Sub/A", gone, "Proj/Sub/B"]
     # action -> (3-entry params with a bad middle entry, middle code, singular params)
@@ -1124,6 +1572,8 @@ def lists(design_env, src):
         "datafile_copy": ({"files": files3, "folder": "Proj"}, "NOT_FOUND", {"file": "Proj/Sub/A", "folder": "Proj"}),
         "datafile_move": ({"files": files3, "folder": "Proj"}, "NOT_FOUND", {"file": "Proj/Sub/A", "folder": "Proj"}),
         "datafile_delete": ({"files": files3, "confirm": True}, "NOT_FOUND", {"file": "Proj/Sub/A", "confirm": True}),
+        "datafile_upload": ({"paths": [out + "/u1.f3d", out + "/gone.f3d", out + "/u3.f3d"]}, "NOT_FOUND",
+                            {"path": out + "/u1.f3d"}),
         "import": ({"paths": [src["step"], out + "/gone.step", src["stp"]]}, "NOT_FOUND", {"path": src["step"]}),
         "import_mesh": ({"paths": [src["stl"], out + "/gone.stl", src["obj"]]}, "NOT_FOUND", {"path": src["stl"]}),
         "save": ({"documents": ["DA", "nope", "DB"]}, "NOT_FOUND", {"document": "DA"}),
@@ -1182,10 +1632,13 @@ def test_list_action_bounds_make_no_fusion_call(lists, monkeypatch, act, n):
 def test_list_action_help_names_list_param_bound_and_result(live, act):
     h = " ".join(ok(run("help", {"action": act}))["help"].split())
     assert LIST_PARAMS[act][0] in h and "50" in h and "results" in h
-    if act in ("save", "save_as"):
+    if act in ("save", "save_as", "datafile_upload"):
         assert "read_only" in h
-    if act == "save_as":
+    if act in ("save_as", "datafile_upload"):
         assert "folder limit" in h
+    if act == "datafile_upload":
+        assert "f3z" in h and "document.open" in h
+        assert "120 s + created files" in h and "more than 2 entries" in h
 
 
 def test_set_read_only_help_states_per_entry_worst_case(live):

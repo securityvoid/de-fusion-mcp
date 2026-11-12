@@ -158,14 +158,16 @@ installer, the live test harness and README.md. Tool actions are specified by th
     that is a token and a name scoped to a component.
 - **REQ-CORE-018**: `Plane` shall accept `"XY"`, `"XZ"`, `"YZ"` (origin planes of the target
   component) or a Ref to a construction plane or planar face; `Axis` shall accept `"X"`, `"Y"`,
-  `"Z"` or a Ref to a construction axis, linear edge or sketch line (§ 5.4).
+  `"Z"`, a Ref to a construction axis or linear edge, or the `{"sketch": Ref, "line": n}` form
+  (REQ-CORE-057) (§ 5.4).
   - _Acceptance_: Unit tests resolve each literal to the fake component's origin plane/axis and
     reject a non-planar face / non-linear edge with `INVALID_PARAMS`.
-- **REQ-CORE-019**: `Profile` shall accept `{"sketch": Ref, "index": int | [int,...]}` resolving
-  to a `Profile` or `ObjectCollection`; `index` may be omitted only when the sketch has exactly one
+- **REQ-CORE-019**: `Profile` shall accept `{"sketch": Ref, "index": int | [int,...]}` or a list
+  of such entries (REQ-CORE-058), resolving to a `Profile` or `ObjectCollection`; `index` may be omitted only when the sketch has exactly one
   profile (§ 5.4).
   - _Acceptance_: Unit tests: single index, index list, omitted index with one profile succeed;
-    omitted index with two profiles and out-of-range index fail with `INVALID_PARAMS`.
+    omitted index with two profiles and out-of-range index fail with `INVALID_PARAMS` whose message
+    gives the index and the profile count and whose hint gives the valid range.
 - **REQ-CORE-020**: Ref resolution shall fail with `NOT_FOUND` when nothing matches, `AMBIGUOUS`
   with every candidate's `ctx.ref()` in `error.candidates` when more than one name matches, and
   `INVALID_PARAMS` when the object has the wrong type (§ 5.4).
@@ -499,6 +501,33 @@ installer, the live test harness and README.md. Tool actions are specified by th
     README.md has sections `Bulk entries`, `Read-only documents` and `Folder limit` naming
     `preserve_read_only`, `READ_ONLY`, `READ_ONLY_NOT_APPLIED`, `?folder=`, `folder =` and
     `--folder`.
+- **REQ-CORE-056**: `guard` shall keep a process-lifetime registry `UNLOCKED` (`{data file id:
+  doc.name}`) of documents `ensure_editable` made editable: an entry is added when Make Editable is
+  issued and removed when `guard.set_read_only` observes `want` true for that file id, or by
+  `guard.forget(id)` when `document.close` closes the document whatever the outcome (with a
+  warning), so the registry lists the documents the guard unlocked that nothing has locked again
+  (§ 5.13).
+  - _Acceptance_: Unit tests with `VERIFY_DELAY` 0: `ensure_editable` on a read-only fake document
+    adds `{<df.id>: <name>}` once Make Editable is issued, observed or not; on an editable or never-saved document it adds nothing; `READ_ONLY`
+    from `preserve_read_only` adds nothing;
+    `set_read_only` with `want` true and the state observed removes the entry, not observed leaves
+    it, and `want` false leaves it; `forget(id)` removes the entry, and removing an id that is not a
+    key raises nothing.
+
+- **REQ-CORE-057**: `Axis` shall also accept `{"sketch": Ref, "line": n}` for a sketch line, `n`
+  the index in the sketch's `sketchCurves.sketchLines`; every `Axis` parameter (including
+  `model.revolve.axis`) accepts it (§ 5.4).
+  - _Acceptance_: Unit tests: `{"sketch": {"name": "S"}, "line": 1}` resolves to the 2nd
+    `SketchLine` of the fake sketch; `n` negative or equal to the line count (`count-1` resolves) and a missing `line` key fail with
+    `INVALID_PARAMS`, the message giving the index and the count (e.g. "line 9 is out of range;
+    sketch 'S' has 3 lines (0-2)"); a non-sketch `sketch` Ref fails with `INVALID_PARAMS`; `model.revolve` accepts
+    the form in its params model.
+- **REQ-CORE-058**: `Profile` shall accept a list of entries `{"sketch": Ref, "index": int |
+  [int,...]}` (profiles from several sketches), resolved in list order to one `ObjectCollection`; an
+  empty list fails with `INVALID_PARAMS` (§ 5.4).
+  - _Acceptance_: Unit tests: a 2-entry list over two fake sketches resolves to a 2-item collection
+    in order; an entry list with an omitted index on a one-profile sketch works; an empty list and a
+    bad entry fail with `INVALID_PARAMS`; `model.extrude` accepts the list in its params model.
 
 ## Non-Functional Requirements
 - **NFR-CORE-001**: The server shall bind only to 127.0.0.1; `script` actions shall be excluded by

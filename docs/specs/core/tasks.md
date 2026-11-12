@@ -168,7 +168,7 @@
     (TASK-CORE-012), the isolated `registry` fixture.
   - _Verify_: `pytest -q tests/test_bulk.py && pytest -q`
 - [x] **TASK-CORE-027** [REQ-CORE-051, REQ-CORE-052, REQ-CORE-054, REQ-CORE-025]: Document guard and pipeline
-  - `guard.py`: `VERIFY_TRIES`, `VERIFY_DELAY`, `saved_file`, `fresh_file`, `folder_path`, `norm`, `norm_folder`,
+  - `guard.py`: `VERIFY_TRIES`, `VERIFY_DELAY`, `saved_file`, `fresh_file` (returns `(file, fresh)`), `folder_path`, `norm`, `norm_folder`,
     `check_folder`, `wait_read_only`, `set_read_only`, `ensure_editable` exactly as § 5.13.
   - `actions.py`: `edits_document` keyword (default from `access`, decoration-time checks),
     `preserve_read_only` added to the model for `"active"`/`"action"`, removed from the params and
@@ -255,3 +255,27 @@
     `tests/test_server_lifecycle.py`, `README.md`
   - _Reuse_: the harness session code of TASK-CORE-021; README sections of TASK-CORE-025.
   - _Verify_: `pytest -q tests/test_live_check.py tests/test_server_lifecycle.py && for h in "Bulk entries" "Read-only documents" "Folder limit"; do grep -q "^## $h" README.md || exit 1; done && grep -qF preserve_read_only README.md && grep -qF READ_ONLY_NOT_APPLIED README.md && grep -qF '?folder=' README.md && grep -qF 'folder =' README.md && grep -qF -- '--folder' README.md`
+
+## Phase 7 — Re-lock registry
+- [x] **TASK-CORE-031** [REQ-CORE-056]: Unlocked-document registry
+  - `guard.py`: `UNLOCKED` per § 5.13; `ensure_editable` adds `df.id: doc.name` once Make Editable is issued, observed or not;
+    `forget(id)` is the only removal (`UNLOCKED.pop(id, None)`), called by `set_read_only` when
+    `want` and observed, and by `close` when it closes the document, whatever the outcome.
+  - `tests/test_guard.py`: every REQ-CORE-056 acceptance case (an autouse fixture clears
+    `guard.UNLOCKED` between tests) and a `fresh_file` test: `(findFileById(id), True)`, and `(df, False)` when it raises or finds nothing.
+  - `fresh_file` returns `(file, fresh)`; update its callers `guard.ensure_editable` and `document.set_read_only`.
+  - _Output_: `De-Fusion/defusion/guard.py`, `De-Fusion/defusion/tools/document.py`, `tests/test_guard.py`
+  - _Reuse_: the TASK-CORE-027 read-only fakes and `guard.VERIFY_DELAY` monkeypatch.
+  - _Verify_: `pytest -q tests/test_guard.py tests/test_document.py -k "set_read_only or ensure_editable" && pytest -q`
+
+## Phase 8 — Sketch-line axis and multi-sketch profile
+- [x] **TASK-CORE-032** [REQ-CORE-057, REQ-CORE-058, REQ-CORE-019, REQ-CORE-018]: `{"sketch","line"}` axis and profile entry lists
+  - `types.py`: `AxisSpec` gains the `{"sketch": Ref, "line": n}` object form and `resolve_ref` for
+    `Axis` resolves it to `sketch.sketchCurves.sketchLines.item(n)` (range check → `INVALID_PARAMS`, message names the sketch and the valid range, e.g. `line 9 is out of range; sketch 'S' has 3 lines (0-2)`);
+    `Profile` accepts a non-empty list of entries and resolves each with the existing entry code into
+    one `ObjectCollection` in list order; an out-of-range entry is `INVALID_PARAMS` with the core design § 5.4 `Profile` message and hint.
+  - `tests/test_types_refs.py`: every REQ-CORE-057 and REQ-CORE-058 acceptance case, asserting the exact `Profile` out-of-range message and hint; `tests/test_model_features.py`:
+    the `model.revolve` and `model.extrude` models accept the new forms.
+  - _Output_: `De-Fusion/defusion/types.py`, `tests/test_types_refs.py`, `tests/test_model_features.py`
+  - _Reuse_: the TASK-CORE-007 `Axis`/`Profile` resolvers and sketch fakes
+  - _Verify_: `pytest -q tests/test_types_refs.py && pytest -q`

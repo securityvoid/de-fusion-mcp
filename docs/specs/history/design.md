@@ -272,8 +272,10 @@ call plus replay metadata:
 
 **References between steps are names**: bodies `{"name": b}`, sketches `{"name": s}`, features
 `{"name": f}`, construction planes/axes `{"name": p}`, origin planes `"XY"|"XZ"|"YZ"`, origin axes
-`"X"|"Y"|"Z"`, profiles `{"sketch": {"name": s}, "index": i}`, faces/edges
-`{"body": {"name": b}, "index": i}`. Because replay restores every dumped name, each reference
+`"X"|"Y"|"Z"`, sketch-line axes `{"sketch": {"name": s}, "line": n}` (index in
+`sketch.sketchCurves.sketchLines`; DEP-HIS-005), profiles `{"sketch": {"name": s}, "index": i}`
+(a list of such entries for several sketches; § 7.7),
+faces/edges `{"body": {"name": b}, "index": i}`. Because replay restores every dumped name, each reference
 resolves in the replay document.
 
 **Values.** Where the feature exposes a `ModelParameter` `p`, the value is `p.expression` (keeps
@@ -349,8 +351,8 @@ those of core `Plane` (§ 6 names), axis forms those of core `Axis`.
 
 | Fusion entity | Conditions | Step | `params` |
 |---|---|---|---|
-| `ExtrudeFeature` | `extentOne` is `DistanceExtentDefinition`, `extentTwo` is `None`, `taperAngleOne` value 0 | `model.extrude` | `profile` (§ 6 from `feature.profile`; a collection → `index` list), `distance` = `L(extentOne.distance)`, `operation` = op |
-| `RevolveFeature` | `extentDefinition` is `AngleExtentDefinition` | `model.revolve` | `profile`, `axis` (origin axis, construction axis name or edge ref from `feature.axis`), `angle` = `A(extentDefinition.angle)`, `extent` = `"symmetric"` when `extentDefinition.isSymmetric` (omitted otherwise), `operation` |
+| `ExtrudeFeature` | `extentOne` is `DistanceExtentDefinition`, `extentTwo` is `None`, `taperAngleOne` value 0 | `model.extrude` | `profile` per § 7.7, `distance` = `L(extentOne.distance)`, `operation` = op |
+| `RevolveFeature` | `extentDefinition` is `AngleExtentDefinition` | `model.revolve` | `profile` per § 7.7, `axis` per `_axis_form` (§ 7.7), `angle` = `A(extentDefinition.angle)`, `extent` = `"symmetric"` when `extentDefinition.isSymmetric` (omitted otherwise), `operation` |
 | `FilletFeature` | exactly one edge set, a `ConstantRadiusFilletEdgeSet` | `model.fillet` | `edges` = edge refs of `edgeSet.edges`, `radius` = `L(edgeSet.radius)` |
 | `ChamferFeature` | exactly one edge set, an `EqualDistanceChamferEdgeSet` | `model.chamfer` | `edges`, `distance` = `L(edgeSet.distance)` |
 | `ShellFeature` | `inputEntities` are faces | `model.shell` | `faces` = face refs, `thickness` = `L(insideThickness)` |
@@ -377,10 +379,9 @@ within 1e-6 of π: the normalised column of `R + I` with the largest norm); `u` 
 ±X/±Y/±Z → `rotate_axis` = `"X"`/`"Y"`/`"Z"` and `angle` = fixed angle of `θ` (negated for a
 negative axis); any other axis → `unknown` with reason `"rotation axis is not an origin axis"`.
 
-Any entity that has no name-based reference form (sketch curves, vertices, entities in another
-component's occurrence context) makes the item `unknown` with reason `"unnamed reference: <type>"`.
-Profile index: position in `profile.parentSketch.profiles` of the profile whose
-`areaProperties().area` and centroid match within 1e-9 cm² / 1e-7 cm.
+Any entity that has no name-based reference form (sketch curves other than the axis `SketchLine`
+of § 7.7, vertices, entities in another component's occurrence context) makes the item `unknown`
+with reason `"unnamed reference: <type>"`. Profile and axis forms: § 7.7.
 
 ### 7.4 Coil
 `req = ctx.attr_get(coil, "request")` (core § 5.9 returns the parsed value or `None`; attribute
@@ -425,6 +426,39 @@ unitless). Order: `userParameters` order, with each parameter moved after every 
 its `p.dependencyParameters` (stable; repeat passes until no move). Emitted only on the page with
 `offset == 0`, before the timeline steps; not counted in `total`.
 
+### 7.7 Profile and axis recovery
+**Axis.** `_axis_form(axis)` gains a `SketchLine` case after the `BRepEdge` and `ConstructionAxis`
+cases: `sketch = axis.parentSketch`; a sketch with an `assemblyContext` raises `_unnamed(axis)`;
+`n` = position of the line in `sketch.sketchCurves.sketchLines` by `entityToken` (not found →
+`_unnamed(axis)`); result `{"sketch": {"name": sketch.name}, "line": n}`. Every `_axis_form` caller
+(revolve `axis`, pattern directions and axes, move `rotate_axis`, construction plane `axis`)
+inherits it; core `Axis` accepts the form (DEP-HIS-005), so the step validates and replays.
+
+**Profile.** `_profile_ref(profile)` is rewritten on the inspect helper (DEP-HIS-007), replacing
+the private `_profile_index`:
+1. `items = [profile]` for a `Profile`, else `list(profile)` (empty → `_require` "feature has no
+   profile").
+2. For each `p`: `sketch = p.parentSketch` (an `assemblyContext` sketch raises `_unnamed`), `i =
+   inspect.profile_index(p)` (position in `sketch.profiles` whose `areaProperties()` area and
+   centroid match within 1e-9 cm² / 1e-7 cm, else `None`). `i is None` raises `_unnamed(p)` with
+   reason `"unnamed reference: Profile"`, so the item becomes an `unknown` step (§ 7.1); `inspect.object_info`
+   on the feature returns the profile's loop curves (REQ-INS-017).
+3. Profiles join the entry for their sketch: `{"sketch": {"name": s}, "index": i}`, `index` an int
+   for one profile and a list for several (sketch entries in first-seen order, indices in input
+   order).
+4. One entry → that dict (the existing single-sketch form, unchanged for already-supported
+   features); several → the list of entries.
+
+`_read_extrude` and `_read_revolve` call `_profile_ref(profile)`. The list is valid for
+`model.extrude`/`model.revolve` only through DEP-HIS-006; the TASK-HIS-008 pydantic validation test
+covers it.
+
+**Live facts** (`recipe_profiles`, `recipe_axis_line`, § 9.2). Relied on, verified there: Fusion
+accepts one extrude over profiles of two sketches (built with `script.execute_python`) and
+`dump_recipe` returns both entries; the `sketchCurves.sketchLines` position of the axis line is the
+same in the replay document. A real profile that fails the area/centroid match cannot be produced on
+demand, so that branch is unit-tested only.
+
 ## 8. apply_recipe_step
 ```python
 @action("history", access="write", timeout=180)
@@ -459,18 +493,20 @@ source of truth); `stale` is echoed so the caller can follow up with `current`.
 
 ## 9. Testability
 ### 9.1 Unit (fake adsk)
-`tests/test_history.py` with `tests/fakes/adsk` extended by a fake `Timeline` (items, marker,
+`tests/test_history.py` with `tests/fakes/adsk` (`historyfakes.py`) extended by a fake `Timeline` (items, marker,
 move methods, `timelineGroups`, `deleteAllAfterMarker`), `TimelineObject`/`TimelineGroup`,
-`Snapshots`/`Snapshot`, feature fakes for every § 7.3 row plus `CoilFeature` with `ModelParameter`
+`Snapshots`/`Snapshot`, feature fakes for every § 7.3 row (a `RevolveFeature` with a `SketchLine` axis; `Profile` fakes with
+`parentSketch`, `areaProperties`) plus `CoilFeature` with `ModelParameter`
 (`role`, `value`, `expression`, `createdBy`) and attributes, and scripted
 `Transaction.Undo`/`Transaction.Redo` text commands (fake `executeTextCommand`) that mutate the fake design. Tests cover each action's
 result shape and errors, `_with_collapsed`, direct-design `WRONG_DESIGN_TYPE`, `UNSUPPORTED`
 detection of absent API members, the undo guard, marker restore after a raising read, every step validating against the
-registered action models, `L`/`A`/`N` emitting `p.expression` (a user-parameter reference kept, a
+registered action models (including the sketch-line axis and multi-sketch profile list), `L`/`A`/`N` emitting `p.expression` (a user-parameter reference kept, a
 model-parameter reference falling back to the fixed value), user parameter steps and their
 dependency order, the `MoveFeature` decomposition (translation only, origin-axis rotation, other
 axis → unknown), coil verbatim params with token-free Refs, coil base sketch skipped, coil stale,
-unknown fallbacks, a marker setter that ignores the restore (`FUSION_ERROR` naming both positions),
+`SketchLine` axis form (found, another component's occurrence context, not found), profile
+recovery (one sketch int and list, two sketches, unmatched fake → `unknown`), unknown fallbacks, a marker setter that ignores the restore (`FUSION_ERROR` naming both positions),
 a 21-item timeline with large sketches whose default `dump_recipe` page is under 64 KiB with
 `next_offset` set (not `RESULT_TOO_LARGE`), and `apply_recipe_step` checks, renames, refusal of
 `document.export` and `cam.post_process` steps (no call recorded) and profile refusal (`NOT_ALLOWED`
@@ -507,4 +543,6 @@ snapshot scenarios use `script.execute_python` and the recipe scenarios use dest
 | `recipe_part` | `history.dump_recipe` | `model.parameter_create {"name": "wall", "expression": "20 mm"}`; `box(40, 20, "wall / 2")`; `model.fillet` on one edge; `model.construction_plane {"method": "offset", "plane": "XY", "offset": "wall / 4"}`; `model.coil {"plane": <plane ref>, "center": [20, 10], "diameter": "30 mm", "coil_type": "revolution_height", "revolutions": 3, "height": "4 mm", "operation": "join"}`. `dump_recipe` (all pages): first step `model.parameter_create` `wall`, the extrude step's `distance` is `"wall / 2"`, no unknown steps, no step for the coil base sketch. Record body count (`inspect.list_bodies {}` total), volume (`inspect.physical_properties {}` `items[0].volume`) and bbox (`inspect.bounds {}`); `document.create {}`; `apply_recipe_step` every step; equal body count, volume within 1e-6 relative, bbox within 1e-4 mm; `document.close {"confirm": true}` |
 | `apply_recipe_step` | `history.apply_recipe_step` | `box`; `history.rename` the extrude item to `Base`; `model.rename` the body to `Plate`; dump (3 steps); `document.create {}`; apply the 3 steps → feature `Base`, body `Plate`; a step with a misspelt param → `INVALID_PARAMS` with `error.schema`; an `unknown` step → `INVALID_PARAMS`; `document.close {"confirm": true}` |
 | `recipe_coil_revolution_pitch`, `recipe_coil_height_pitch`, `recipe_coil_spiral` | `history.dump_recipe` | one `model.coil` of that `coil_type` (`new_body`), dump, replay into a new document, same comparison as `recipe_part` |
+| `recipe_axis_line` | `history.dump_recipe` | `sketch.create` on `XY`; `sketch.line {"points": [[0, 0], [0, 20]]}` (a `SketchLine`, index 0 in `sketchLines`), then `sketch.rectangle {"mode": "two_point", "p1": [10, 0], "p2": [20, 20]}`; `model.revolve` of the rectangle profile about `{"sketch": <ref>, "line": 0}` (DEP-HIS-005). `dump_recipe`: the revolve step's `axis` is `{"sketch": {"name": <sketch>}, "line": 0}`, no unknown steps; replay into a new document, same comparison as `recipe_part` |
+| `recipe_profiles` | `history.dump_recipe` | `script.execute_python` (confirm): two `XY` sketches each with one rectangle (disjoint), one `ExtrudeFeature` over both profiles (collection). `dump_recipe`: the extrude `profile` is a 2-entry list in sketch order, no unknown steps; `inspect.object_info` on the extrude returns `profiles` with 2 entries, non-empty `loops` (REQ-INS-017); replay into a new document, same comparison as `recipe_part` |
 | `coil_probe` | `history.dump_recipe` | one `model.coil`; prints each of its model parameters' `role` (TASK-HIS-011 confirms § 7.4) |

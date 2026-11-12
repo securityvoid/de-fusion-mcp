@@ -972,6 +972,71 @@ def test_dump_feature_revolve_edge_axis_and_not_symmetric_and_bad_extent(ctx, sc
     assert b["kind"] == "unknown" and b["reason"] == "revolve extent is not an angle"
 
 
+def _revolve_with_axis(scene, axis):
+    ext = fusion.AngleExtentDefinition(angle=mp(1.0, "57 deg", deps=None), isSymmetric=False)
+    scene.feature(fusion.RevolveFeature, "R", profile=scene.profiles[0], axis=axis,
+                  extentDefinition=ext, operation=FO.CutFeatureOperation)
+
+
+def test_dump_axis_sketch_line_found(ctx, scene):
+    scene.sketch.add_line()
+    line = scene.sketch.add_line()
+    _revolve_with_axis(scene, line)
+    st = one_step(scene, ctx)
+    assert st["params"]["axis"] == {"sketch": {"name": "Sketch1"}, "line": 1}
+    defusion.actions.registry().get(st["tool"], st["action"]).model.model_validate(st["params"])
+
+
+def test_dump_axis_sketch_line_occurrence_context_is_unknown(ctx, scene):
+    other = scene.root.add_sketch("Sketch2")
+    line = other.add_line()
+    other.assemblyContext = object()
+    _revolve_with_axis(scene, line)
+    (step,) = [x for x in scene.dump_steps(ctx) if x.get("type") == "RevolveFeature"]
+    assert step["reason"] == "unnamed reference: SketchLine"
+
+
+def test_dump_axis_sketch_line_not_found_is_unknown(ctx, scene):
+    scene.sketch.add_line()
+    stray = fusion.SketchLine(scene.sketch)
+    _revolve_with_axis(scene, stray)
+    assert one_step(scene, ctx)["reason"] == "unnamed reference: SketchLine"
+
+
+def test_dump_profile_forms_validate_against_models(ctx, scene):
+    s2 = scene.root.add_sketch("Sketch2")
+    p2 = s2.add_profile(area=1.0, centroid=(0, 0, 0))
+    ext = fusion.AngleExtentDefinition(angle=mp(1.0, "57 deg", deps=None), isSymmetric=False)
+    line = scene.sketch.add_line()
+    cases = {
+        "int": scene.profiles[1],
+        "list": scene.profiles,
+        "two": [scene.profiles[0], p2, scene.profiles[1]],
+    }
+    expected = {
+        "int": {"sketch": {"name": "Sketch1"}, "index": 1},
+        "list": {"sketch": {"name": "Sketch1"}, "index": [0, 1]},
+        "two": [{"sketch": {"name": "Sketch1"}, "index": [0, 1]}, {"sketch": {"name": "Sketch2"}, "index": 0}],
+    }
+    for k, prof in cases.items():
+        scene.feature(fusion.ExtrudeFeature, "E_" + k, **extrude_attrs(scene, profile=prof))
+        scene.feature(fusion.RevolveFeature, "R_" + k, profile=prof, axis=line, extentDefinition=ext,
+                      operation=FO.CutFeatureOperation)
+    steps = [s for s in scene.dump_steps(ctx) if s.get("action") in ("extrude", "revolve")]
+    assert len(steps) == 6
+    for st in steps:
+        key = st["source"]["name"].split("_")[1]
+        assert st["params"]["profile"] == expected[key]
+        defusion.actions.registry().get(st["tool"], st["action"]).model.model_validate(st["params"])
+
+
+def test_dump_profile_unmatched_is_unknown(ctx, scene):
+    stray = fusion.Profile(area=99.0)
+    stray.parentSketch = scene.sketch
+    scene.feature(fusion.ExtrudeFeature, "E", **extrude_attrs(scene, profile=[scene.profiles[0], stray]))
+    assert one_step(scene, ctx)["reason"] == "unnamed reference: Profile"
+
+
 def test_dump_feature_fillet_and_chamfer(ctx, scene):
     scene.feature(fusion.FilletFeature, "F", edgeSets=[
         fusion.ConstantRadiusFilletEdgeSet(edges=[scene.edges[0], scene.edges[2]], radius=mp(0.2, "2 mm"))])

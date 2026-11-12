@@ -8,3 +8,5 @@
 | 0.1.3 | 2026-11-10 | spec-consistency s1 r2 and s2 r1 fixes (C1 r2, C4 findings) |
 | 0.2.0 | 2026-11-11 | Live corrections: undo via `Transaction.Undo`/`Transaction.Redo` text commands (§ 4.8, § 9.1; `UndoCommand.execute()` is a no-op), reorder `moved` read from the re-read index (§ 4.2) |
 | 0.2.1 | 2026-11-11 | Live scenarios close documents with `document.close {"documents": [...]}` (document 0.4.0 § 2.7) |
+| 0.3.0 | 2026-11-12 | Recipe profile/axis recovery: sketch-line axis form and multi-sketch profile lists (owned by core, REQ-CORE-057/058, TASK-CORE-032); unmatched profile stays `unknown`, `object_info` returns its loop curves; (REQ-HIS-023, REQ-HIS-024, DEP-HIS-005..007, TASK-HIS-013..014; REQ-HIS-022 amended) |
+| 0.3.1 | 2026-11-12 | TASK-HIS-013 output no longer lists historyfakes.py (V1-r1-1) |

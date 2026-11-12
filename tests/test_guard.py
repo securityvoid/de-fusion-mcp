@@ -29,6 +29,13 @@ def no_delay(monkeypatch):
     monkeypatch.setattr(guard, "VERIFY_DELAY", 0)
 
 
+@pytest.fixture(autouse=True)
+def clear_unlocked():
+    guard.UNLOCKED.clear()
+    yield
+    guard.UNLOCKED.clear()
+
+
 @pytest.fixture
 def env(fake_app):
     """Project "P" with folders A, A/B and X; ``doc(folder)`` opens a document saved there."""
@@ -346,3 +353,82 @@ def test_ensure_editable_raising_lookup_falls_back_to_data_file(env, monkeypatch
     assert ctx.made_editable == [] and env.app.commands == []
     e = raises_action(guard.ensure_editable, env.ctx("P/X"), doc)
     assert e.code == "NOT_ALLOWED"
+
+
+# --- UNLOCKED registry and fresh_file (REQ-CORE-056) -------------------------------------------------
+
+def test_ensure_editable_registers_unlocked(env):
+    doc = env.doc("P/A", "Part", read_only=True)
+    guard.ensure_editable(env.ctx(), doc)
+    assert guard.UNLOCKED == {doc.dataFile.id: "Part"}
+
+
+def test_ensure_editable_registers_even_when_not_observed(env):
+    doc = env.doc("P/A", "Part", read_only=True)
+    env.app.read_only_reads = None
+    raises_action(guard.ensure_editable, env.ctx(), doc)
+    assert guard.UNLOCKED == {doc.dataFile.id: "Part"}
+
+
+def test_ensure_editable_registers_nothing_otherwise(env):
+    guard.ensure_editable(env.ctx(), env.doc("P/A", "Ed"))
+    guard.ensure_editable(env.ctx(), env.doc(None, "New"))
+    ro = env.doc("P/A", "Ro", read_only=True)
+    ctx = env.ctx()
+    ctx.preserve_read_only = True
+    raises_action(guard.ensure_editable, ctx, ro)
+    assert guard.UNLOCKED == {}
+
+
+def test_set_read_only_want_observed_removes_entry(env):
+    doc = env.doc("P/A", "Part")
+    guard.UNLOCKED[doc.dataFile.id] = "Part"
+    assert guard.set_read_only(env.ctx(), doc, True, lambda: env.data.findFileById(doc.dataFile.id))
+    assert guard.UNLOCKED == {}
+
+
+def test_set_read_only_not_observed_keeps_entry(env):
+    doc = env.doc("P/A", "Part")
+    guard.UNLOCKED[doc.dataFile.id] = "Part"
+    env.app.read_only_reads = None
+    assert not guard.set_read_only(env.ctx(), doc, True, lambda: env.data.findFileById(doc.dataFile.id))
+    assert guard.UNLOCKED == {doc.dataFile.id: "Part"}
+
+
+def test_set_read_only_editable_keeps_entry(env):
+    doc = env.doc("P/A", "Part", read_only=True)
+    guard.UNLOCKED[doc.dataFile.id] = "Part"
+    assert guard.set_read_only(env.ctx(), doc, False, lambda: env.data.findFileById(doc.dataFile.id))
+    assert guard.UNLOCKED == {doc.dataFile.id: "Part"}
+
+
+def test_unlock_then_relock_round_trip_leaves_registry_empty(env):
+    """The close re-lock path: ensure_editable registers, set_read_only(True) clears."""
+    doc = env.doc("P/A", "Part", read_only=True)
+    ctx = env.ctx()
+    guard.ensure_editable(ctx, doc)
+    assert doc.dataFile.id in guard.UNLOCKED
+    assert guard.set_read_only(ctx, doc, True, lambda: env.data.findFileById(doc.dataFile.id))
+    assert guard.UNLOCKED == {} and doc.dataFile.isReadOnly is True
+
+
+def test_forget_removes_and_ignores_absent(env):
+    guard.UNLOCKED["urn:a"] = "A"
+    guard.forget("urn:a")
+    guard.forget("urn:missing")
+    assert guard.UNLOCKED == {}
+
+
+def test_fresh_file_found_raises_or_none(env, monkeypatch):
+    doc = env.doc("P/A", "Part")
+    df = doc.dataFile
+    found = env.data.findFileById(df.id)
+    assert guard.fresh_file(env.ctx(), df) == (found, True)
+    monkeypatch.setattr(env.data, "findFileById", lambda _id: None)
+    assert guard.fresh_file(env.ctx(), df) == (df, False)
+
+    def boom(_id):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(env.data, "findFileById", boom)
+    assert guard.fresh_file(env.ctx(), df) == (df, False)

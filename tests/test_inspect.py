@@ -1,4 +1,5 @@
 """inspect tool unit tests (fake adsk)."""
+import json
 import math
 import random
 
@@ -1134,3 +1135,251 @@ def test_compare_meshes_symmetric_directions_differ(ctx, fake_design):
     assert r["forward"]["max"] < 5.0  # the small end cap sits 1.67 mm inside the big box
     assert r["reverse"]["max"] == pytest.approx(10.0) and r["hausdorff"] == pytest.approx(10.0)
     assert r["reverse"]["max_point"][0] == pytest.approx(30.0)
+
+
+# ---- object_info extrude / revolve inputs (§ 2.2.1, REQ-INS-017) -----------------------------------
+
+_T = core.Curve3DTypes
+
+
+@pytest.fixture
+def cm(fake_app, fake_design):
+    return make_ctx(fake_app, OutputUnits.for_call({"length": "cm"}))
+
+
+def _geo(**kw):
+    return core.Base.__new__(core.Base) if not kw else core._Geo(**kw)
+
+
+def _line(a, b):
+    return fusion.ProfileCurve(core.Line3D(startPoint=P(*a), endPoint=P(*b)), _T.Line3DCurveType)
+
+
+def _rect_profile(sketch, w=2.0, h=1.0, **kw):
+    pr = sketch.add_profile(**kw)
+    pts = [(0, 0, 0), (w, 0, 0), (w, h, 0), (0, h, 0)]
+    pr.profileLoops = core.Collection(
+        [fusion.ProfileLoop([_line(pts[i], pts[(i + 1) % 4]) for i in range(4)])])
+    return pr
+
+
+def _extrude(root, profile):
+    f = root.add_feature("E")
+    f.profile = profile
+    return f
+
+
+def test_profile_extrude_rectangle(cm, fake_design):
+    root = fake_design.rootComponent
+    pr = _rect_profile(root.add_sketch("S"))
+    r = info(cm, _extrude(root, pr))["properties"]
+    assert r["profiles"] == [{"sketch": "S", "index": 0}]
+    items = r["profile_curves"]["items"]
+    assert [c["type"] for c in items] == ["line"] * 4 and {c["loop"] for c in items} == {0}
+    assert items[1] == {"profile": 0, "loop": 0, "type": "line", "start": [2.0, 0.0], "end": [2.0, 1.0]}
+    assert items[2]["start"] == [2.0, 1.0] and items[3]["end"] == [0.0, 0.0]
+
+
+def test_profile_extrude_inch_units(fake_app, fake_design):
+    root = fake_design.rootComponent
+    f = _extrude(root, _rect_profile(root.add_sketch("S"), w=2.54, h=2.54))
+    c = make_ctx(fake_app, OutputUnits.for_call({"length": "in"}))
+    items = info(c, f)["properties"]["profile_curves"]["items"]
+    assert items[1]["start"] == [1.0, 0.0] and items[1]["end"] == [1.0, 1.0]
+
+
+def test_profile_collection_of_two_and_unmatched_index(cm, fake_design):
+    root = fake_design.rootComponent
+    s = root.add_sketch("S")
+    a, b = _rect_profile(s, area=1.0), _rect_profile(s, area=2.0)
+    stray = fusion.Profile(area=9.0)
+    stray.parentSketch = s
+    f = _extrude(root, core.ObjectCollection())
+    f.profile = core.Collection([a, b, stray])
+    r = info(cm, f)["properties"]
+    assert [p["index"] for p in r["profiles"]] == [0, 1, None]
+    assert r["profile_curves"]["total"] == 8
+    assert [c["profile"] for c in r["profile_curves"]["items"]] == [0] * 4 + [1] * 4
+
+
+def test_profile_raising_loops_gives_none(cm, fake_design):
+    root = fake_design.rootComponent
+    pr = _rect_profile(root.add_sketch("S"))
+    pr.profileLoops = None  # iterating raises
+    r = info(cm, _extrude(root, pr))["properties"]
+    assert r["profile_curves"] is None and r["profiles"] == [{"sketch": "S", "index": 0}]
+    pr.areaProperties = None  # profile_index raises
+    assert info(cm, _extrude(root, pr))["properties"]["profiles"] is None
+
+
+def test_profile_circle_and_arc_ccw(cm, fake_design):
+    root = fake_design.rootComponent
+    s = root.add_sketch("S")
+    pr = s.add_profile()
+    arc = lambda n: fusion.ProfileCurve(core._Geo(
+        center=P(0, 0, 0), radius=1.0, startPoint=P(1, 0, 0), endPoint=P(0, 1, 0), normal=V(0, 0, n)),
+        _T.Arc3DCurveType)
+    circ = fusion.ProfileCurve(core._Geo(center=P(1, 2, 0), radius=0.5), _T.Circle3DCurveType)
+    pr.profileLoops = core.Collection([fusion.ProfileLoop([arc(1), arc(-1)]), fusion.ProfileLoop([circ])])
+    items = info(cm, _extrude(root, pr))["properties"]["profile_curves"]["items"]
+    assert items[0]["ccw"] is True and items[1]["ccw"] is False
+    assert items[0]["start"] == [1.0, 0.0] and items[0]["radius"] == 1.0
+    assert items[2] == {"profile": 0, "loop": 1, "type": "circle", "center": [1.0, 2.0], "radius": 0.5}
+
+
+def _sampled(kind, ends=None):
+    ev = core.CurveEvaluator3D((0.0, 2.0), lambda t: (t, t * t, 0.0))
+    return fusion.ProfileCurve(core._Geo(evaluator=ev), getattr(_T, kind + "CurveType"))
+
+
+def test_profile_spline_ellipse_sample_16_points(cm, fake_design):
+    root = fake_design.rootComponent
+    pr = root.add_sketch("S").add_profile()
+    pr.profileLoops = core.Collection([fusion.ProfileLoop([
+        _sampled("Ellipse3D"), _sampled("EllipticalArc3D"), _sampled("NurbsCurve3D")])])
+    items = info(cm, _extrude(root, pr))["properties"]["profile_curves"]["items"]
+    assert [c["type"] for c in items] == ["ellipse", "elliptical_arc", "spline"]
+    for c in items:
+        assert len(c["points"]) == 16 and c["points"][0] == [0.0, 0.0] and c["points"][-1] == [2.0, 4.0]
+
+
+def test_profile_other_type_uses_end_points(cm, fake_design):
+    root = fake_design.rootComponent
+    pr = root.add_sketch("S").add_profile()
+    ev = core.CurveEvaluator3D(ends=(P(0, 0, 0), P(3, 4, 0)))
+    pr.profileLoops = core.Collection([fusion.ProfileLoop([
+        fusion.ProfileCurve(core._Geo(evaluator=ev), _T.InfiniteLine3DCurveType),
+        fusion.ProfileCurve(core._Geo(), _T.InfiniteLine3DCurveType)])])
+    f = _extrude(root, pr)
+    assert info(cm, f)["properties"]["profile_curves"] is None  # second curve has no evaluator: raises
+    pr.profileLoops = core.Collection([pr.profileLoops[0] and fusion.ProfileLoop(
+        [fusion.ProfileCurve(core._Geo(evaluator=ev), _T.InfiniteLine3DCurveType)])])
+    assert info(cm, f)["properties"]["profile_curves"]["items"][0]["points"] == [[0.0, 0.0], [3.0, 4.0]]
+
+
+def _many_profile(root, n_profiles, per):
+    s = root.add_sketch("S")
+    prs = []
+    for k in range(n_profiles):
+        pr = s.add_profile(area=float(k + 1))
+        pr.profileLoops = core.Collection([fusion.ProfileLoop([_line((i, k, 0), (i + 1, k, 0)) for i in range(per)])])
+        prs.append(pr)
+    f = _extrude(root, core.ObjectCollection())
+    f.profile = core.Collection(prs)
+    return f
+
+
+def test_profile_curves_default_limit_25(cm, fake_design):
+    f = _many_profile(fake_design.rootComponent, 1, 250)
+    page = info(cm, f)["properties"]["profile_curves"]
+    assert len(page["items"]) == 25 and page["next_offset"] == 25 and page["total"] == 250
+
+
+def test_profile_curves_100_splines_under_64k(cm, fake_design):
+    root = fake_design.rootComponent
+    pr = root.add_sketch("S").add_profile()
+    pr.profileLoops = core.Collection([fusion.ProfileLoop([_sampled("NurbsCurve3D") for _ in range(100)])])
+    r = info(cm, _extrude(root, pr))
+    assert len(json.dumps(r)) < 64 * 1024 and len(r["properties"]["profile_curves"]["items"]) == 25
+    assert len(json.dumps(ins.object_info(cm, _extrude(root, pr), limit=100))) < 64 * 1024
+
+
+def test_profile_curves_paging_builds_only_slice(cm, fake_design, monkeypatch):
+    f = _many_profile(fake_design.rootComponent, 5, 50)
+    built = []
+    real = ins._profile_curve
+    monkeypatch.setattr(ins, "_profile_curve", lambda c, pc: built.append(1) or real(c, pc))
+    seen, off, offs = [], 0, []
+    while off is not None:
+        built.clear()
+        pg = ins.object_info(cm, f, offset=off, limit=100)["properties"]["profile_curves"]
+        assert len(built) == len(pg["items"])
+        seen += [(c["profile"], c["start"]) for c in pg["items"]]
+        offs.append(pg["next_offset"])
+        off = pg["next_offset"]
+    assert offs == [100, 200, None] and len(seen) == 250 and len(set(map(str, seen))) == 250
+
+
+def test_profile_curves_bad_limit_is_invalid_params(cm, fake_design):
+    f = _many_profile(fake_design.rootComponent, 1, 2)
+    assert raises_action(lambda: ins.object_info(cm, f, limit=0)).code == "INVALID_PARAMS"
+    assert "profile_curves" not in info(cm, fake_design.rootComponent.add_sketch("T"))["properties"]
+
+
+def test_profile_curves_page_over_64k_is_result_too_large(cm, fake_design):
+    from defusion import results
+    UNITS = {"length": "mm", "angle": "deg"}
+    root = fake_design.rootComponent
+    pr = root.add_sketch("S").add_profile()
+    pr.profileLoops = core.Collection([fusion.ProfileLoop([_sampled("NurbsCurve3D") for _ in range(300)])])
+    f = _extrude(root, pr)
+    small = ins.object_info(cm, f, limit=100)
+    assert results.shape("inspect", "object_info", small, UNITS).is_error is False
+    big = ins.object_info(cm, f, limit=300)
+    assert len(json.dumps(big, separators=(",", ":")).encode()) > 65536
+    r = results.shape("inspect", "object_info", big, UNITS)
+    err = r.structured_content["error"]
+    assert r.is_error is True and err["code"] == "RESULT_TOO_LARGE" and "limit" in err["hints"][0]
+
+
+def test_profile_other_entity_ignores_paging(cm, fake_design):
+    s = fake_design.rootComponent.add_sketch("S")
+    r = ins.object_info(cm, s, offset=5, limit=3)
+    assert r["type"] == "Sketch" and "profile_curves" not in r["properties"]
+
+
+def test_profile_index_and_loops_direct(cm, fake_design):
+    s = fake_design.rootComponent.add_sketch("S")
+    a, b = _rect_profile(s, area=1.0), _rect_profile(s, area=2.0, centroid=(1, 1, 0))
+    assert ins.profile_index(a) == 0 and ins.profile_index(b) == 1
+    stray = fusion.Profile(area=2.0 + 1e-8, centroid=(1, 1, 0))
+    stray.parentSketch = s
+    assert ins.profile_index(stray) is None
+    loops = ins.profile_loops(cm, a)
+    assert len(loops) == 1 and len(loops[0]) == 4 and loops[0][0]["type"] == "line"
+
+
+def _revolve(root, axis):
+    f = root.add_feature("R", fusion.RevolveFeature)
+    f.profile = _rect_profile(root.add_sketch("S"))
+    f.axis = axis
+    return f
+
+
+def test_object_info_revolve_origin_and_construction_axis(cm, fake_design):
+    root = fake_design.rootComponent
+    for ax, name in ((root.xConstructionAxis, "X"), (root.zConstructionAxis, "Z")):
+        ax.geometry = core.InfiniteLine3D(origin=P(0, 0, 0), direction=V(0, 0, 2) if name == "Z" else V(3, 0, 0))
+        a = info(cm, _revolve(root, ax))["properties"]["axis"]
+        assert a["kind"] == "origin" and a["name"] == name and a["ref"] is None
+    assert a["direction"] == [0.0, 0.0, 1.0]
+    custom = root.add_construction_axis("Ax")
+    custom.geometry = core.InfiniteLine3D(origin=P(1, 2, 3), direction=V(0, 1, 0))
+    a = info(cm, _revolve(root, custom))["properties"]["axis"]
+    assert a["kind"] == "construction_axis" and a["name"] == "Ax" and a["ref"]["name"] == "Ax"
+    assert a["origin"] == [1.0, 2.0, 3.0] and a["direction"] == [0.0, 1.0, 0.0]
+
+
+def test_object_info_revolve_edge_axis(cm, fake_design):
+    root = fake_design.rootComponent
+    e = new_box(root).add_edge(core.Line3D(startPoint=P(1, 1, 1), endPoint=P(1, 1, 5)))
+    a = info(cm, _revolve(root, e))["properties"]["axis"]
+    assert a["kind"] == "edge" and a["name"] is None and a["ref"] is not None
+    assert a["origin"] == [1.0, 1.0, 1.0] and a["direction"] == [0.0, 0.0, 1.0]
+
+
+def test_object_info_revolve_sketch_line_offset_plane(cm, fake_design):
+    root = fake_design.rootComponent
+    s = root.add_sketch("Off", origin=(0, 0, 5))
+    s.add_line()
+    ln = s.add_line()
+    ln.geometry = core.Line3D(startPoint=P(1, 0, 0), endPoint=P(1, 3, 0))
+    a = info(cm, _revolve(root, ln))["properties"]["axis"]
+    assert a["kind"] == "sketch_line" and a["ref"] == {"sketch": {"name": "Off"}, "line": 1}
+    assert a["origin"] == [1.0, 0.0, 5.0] and a["direction"] == [0.0, 1.0, 0.0]
+
+
+def test_object_info_revolve_unsupported_axis_is_none(cm, fake_design):
+    root = fake_design.rootComponent
+    r = info(cm, _revolve(root, root.add_sketch("X").add_point()))["properties"]
+    assert r["axis"] is None and r["profiles"] is not None

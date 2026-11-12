@@ -17,7 +17,7 @@ _ACCURACY = {"low": "LowCalculationAccuracy", "medium": "MediumCalculationAccura
 ```
 (`getattr(adsk.fusion.CalculationAccuracy, _ACCURACY[a])`).
 
-Output conventions (REQ-INS-015): points are `[x, y, z]` via `ctx.length_out` per coordinate;
+Output conventions (REQ-INS-015): points are `[x, y, z]` via `ctx.length_out` per coordinate (sketch-space curve points in § 2.2.1 are `[x, y]`);
 directions are unit `[x, y, z]` floats (unitless); areas `ctx.area_out`, volumes `ctx.volume_out`,
 masses `ctx.mass_out`, angles `ctx.angle_out`. Density (kg/cm³ from Fusion) is output as
 `density / ctx.length_out(1.0) ** 3` (kg per output-unit³); moments (kg·cm²) as
@@ -36,6 +36,8 @@ Private helpers (unit-tested directly):
 - `_surface(ctx, face)` → surface dict (§ 2.4/2.6); `_curve(ctx, edge)` → curve dict (§ 2.5/2.6).
 - `_index_of(collection, entity)` → index whose `entityToken` equals `entity.entityToken`, else
   `None` (one token map per call, built lazily).
+- Public: `profile_index(profile)` (imported by the history set, DEP-HIS-007) and
+  `profile_loops(ctx, profile)` (§ 2.2).
 
 ## 2. Actions
 ### 2.1 summary — read (REQ-INS-001)
@@ -64,7 +66,7 @@ Active product is not a `Design` (e.g. a drawing) → `"design": null`.
 
 ### 2.2 object_info — read (REQ-INS-002)
 ```python
-def object_info(ctx: Ctx, entity: Entity) -> dict
+def object_info(ctx: Ctx, entity: Entity, offset: int = 0, limit: int = 25) -> dict
 ```
 Result `{"ref", "type": obj.objectType.split("::")[-1], "properties": {...}, "bbox", "parent"}`.
 `bbox` = `_bbox(obj.boundingBox)` when the attribute exists, else `None`. `properties` by type
@@ -80,11 +82,54 @@ Result `{"ref", "type": obj.objectType.split("::")[-1], "properties": {...}, "bb
 | `Component` | `bodies`, `mesh_bodies`, `sketches`, `features`, `occurrences` (counts), `part_number`, `description`, `material` | `None` for root; else first `design.rootComponent.allOccurrencesByComponent(c)` item's `assemblyContext` component or root |
 | `Occurrence` | `full_path`, `is_visible`, `is_grounded`, `is_light_bulb_on`, `transform` (`transform2.asArray()` with translation items 3/7/11 through `ctx.length_out`) | `assemblyContext` or root |
 | `Sketch` | `profiles`, `curves` (`sketchCurves.count`), `points`, `is_fully_constrained`, `is_visible`, `reference_plane` (Ref) | `parentComponent` |
+| `ExtrudeFeature`, `RevolveFeature` | the `Feature subclasses` keys below plus `profiles` (and for revolve `axis`), § 2.2.1 | `parentComponent` |
 | `Feature` subclasses | `health` (`healthState` name), `is_suppressed`, `timeline_index` (`timelineObject.index`, `None` in direct mode) | `parentComponent` |
 | `UserParameter`/`ModelParameter` | `expression`, `value` (`value` converted by `unit`: length → `length_out`, angle → `angle_out`, else raw), `unit`, `comment` | `None` |
 | `ConstructionPlane` / `ConstructionAxis` / `ConstructionPoint` | `is_visible`, `definition` (`definition.objectType` short name) | `parent` |
 | `Joint` / `AsBuiltJoint` | `motion` (`jointMotion.jointType` name), `occurrence_one`, `occurrence_two` (Refs), `is_suppressed` | `parentComponent` |
 | any other | `name` when present | `None` |
+
+#### 2.2.1 Extrude and revolve inputs (REQ-INS-017)
+`profiles`: `feature.profile` is a `Profile` or an `ObjectCollection`; each profile `p` gives
+`{"sketch": p.parentSketch.name, "index": profile_index(p)}`. No caps: nothing is dropped or rounded.
+`properties["profile_curves"]` is `ctx.page(seq, offset, limit, build=...)` (core § 5.5; `RESULT_TOO_LARGE` with a
+smaller-limit hint when a page is too big), where `seq` is the cheap flat sequence of curve handles
+(profile position, loop, curve) over all profiles in order; `build` makes only the requested slice's
+records, each `{"profile": <position in profiles>, "loop": <loop index>, ...curve}` from
+`profile_loops(ctx, p)`. `profile_index` runs once per profile, for `profiles` only. `object_info` takes
+optional `offset: int = 0, limit: int = 25` (a curve record is up to about 700 bytes) like the `list_*` actions; for other entity types they are ignored (no error) and the result is not paged.
+- `profile_index(profile)` → position in `profile.parentSketch.profiles` of the profile whose
+  `areaProperties()` area and centroid match within 1e-9 cm² / 1e-7 cm, else `None`.
+- `profile_loops(ctx, profile)` → `[[curve, ...], ...]`, one list per `profile.profileLoops`
+  item in Fusion order, curves in `loop.profileCurves` order. Lengths in cm are converted to
+  `ctx.length_out`. Each `pc` is read through
+  `pc.geometry` (the curve as trimmed in the profile, in sketch space, not `pc.sketchEntity`, which
+  is the whole untrimmed sketch curve) and `pc.geometryType`; points are `[x, y]` (z dropped):
+
+| `geometryType` (`adsk.core.Curve3DTypes`) | curve |
+|---|---|
+| `Line3DCurveType` | `{"type": "line", "start": [x, y], "end": [x, y]}` |
+| `Arc3DCurveType` | `{"type": "arc", "center": [x, y], "radius": r, "start": [x, y], "end": [x, y], "ccw": g.normal.z > 0}` (`ccw`: travelling from `start` to `end` is counter-clockwise in sketch space) |
+| `Circle3DCurveType` | `{"type": "circle", "center": [x, y], "radius": r}` |
+| `Ellipse3DCurveType`, `EllipticalArc3DCurveType`, `NurbsCurve3DCurveType` | `{"type": "ellipse"\|"elliptical_arc"\|"spline", "points": [[x, y], ...]}`: 16 points at equal parameter steps over `getParameterExtents` (`g.evaluator.getPointsAtParameters`), first and last equal to the curve ends. A documented simplification: a sampled polyline, not the exact curve |
+| any other | `{"type": "other", "points": [start, end]}` from `pc.geometry.evaluator` ends, or, when no evaluator, raise |
+
+A raising read of any curve raises out of `profile_loops`; `object_info` then returns
+`profile_curves: None` and `profiles` stays (the per-key guard of § 2.2), never a partial list.
+
+`axis` (revolve only), `a = feature.axis`; `{"kind", "name", "ref", "origin", "direction"}` with
+`origin` via `_pt` and `direction` a unit vector via `_vec`, both in model space (the feature's
+component space):
+
+| `a` | `kind` | `name` | `ref` | `origin`, `direction` |
+|---|---|---|---|---|
+| `ConstructionAxis` equal (`entityToken`) to the component's `x/y/zConstructionAxis` | `origin` | `"X"\|"Y"\|"Z"` | `None` | `a.geometry.origin`, `a.geometry.direction` (`InfiniteLine3D`) |
+| other `ConstructionAxis` | `construction_axis` | `a.name` | `ctx.ref(a)` | same |
+| `BRepEdge` | `edge` | `None` | `ctx.ref(a)` | `a.geometry` (`Line3D`) `startPoint`; `endPoint - startPoint` |
+| `SketchLine` | `sketch_line` | `None` | `{"sketch": {"name": s.name}, "line": n}`, `n` = `_index_of(s.sketchCurves.sketchLines, a)` | `s = a.parentSketch`; `g = a.geometry` (`Line3D`, sketch space); `s.sketchToModelSpace(g.startPoint)` and `(g.endPoint)`; origin = first, direction = second − first |
+
+An axis of another type, or a failing read, gives `axis: None`. The edge Line3D, `InfiniteLine3D` and `sketchToModelSpace`
+facts are verified by the `object_info` live scenario (§ 3.2).
 
 ### 2.3 list_bodies — read (REQ-INS-003)
 ```python
@@ -293,10 +338,18 @@ Fakes are added additively (no change to existing behaviour) to `tests/fakes/ads
 `centroid`, surface geometries (`Plane`, `Cylinder`, `Sphere`), edge curves (`Line3D`, `Circle3D`),
 `PhysicalProperties` with `getXYZMomentsOfInertia`, `getPrincipalMomentsOfInertia`,
 `getPrincipalAxes`, `createInterferenceInput`/`analyzeInterference`, `MeshBody` with
-`displayMesh`, `Selections`, `Analyses.sectionAnalyses`. Tests:
+`displayMesh`, `Selections`, `Analyses.sectionAnalyses`, and (REQ-INS-017) `Profile.parentSketch`/`profileLoops`, `ProfileLoop.profileCurves`,
+`ProfileCurve.geometry`/`geometryType`, `Sketch.sketchCurves.sketchLines`/`sketchToModelSpace`, `SketchLine.geometry`, `RevolveFeature.axis`
+(`tests/fakes/adsk/fusion.py`), and `Line3D`, `Arc3D`, `Circle3D`, `InfiniteLine3D` with `evaluator.getPointsAtParameters`
+(`tests/fakes/adsk/core.py`). Tests:
 - `summary`: parametric and direct fakes; no document → `NO_DOCUMENT`; missing `designIntent` →
   `null`.
 - `object_info` per row of the § 2.2 table; failing attribute read → `None` for that key.
+- `object_info` extrude/revolve (§ 2.2.1): rectangle profile (4 lines, `index`, `in` scaling), circle,
+  arc (`ccw` both ways), ellipse (`points` ends equal curve ends), profile collection of two,
+  unmatched profile → `index` `None`, raising `profileLoops` → `profile_curves` `None` (`profiles` stays), raising `areaProperties` → `profiles` `None`; revolve axis
+  for each of origin, construction axis, edge and `SketchLine` (offset-plane sketch: `sketchToModelSpace`
+  applied), unsupported axis type → `None`. `profile_index` and `profile_loops` directly.
 - `list_bodies`/`list_faces`/`list_edges`: page keys, slicing, unit conversion with `in`.
 - `geometry`: face adjacency on a fake box; sketch → `INVALID_PARAMS`.
 - `bounds`: default, `precise`, missing `getOrientedBoundingBox` → `UNSUPPORTED`.
@@ -317,7 +370,15 @@ Fakes are added additively (no change to existing behaviour) to `tests/fakes/ads
 scenario name is the action it tests, so `--only inspect.<action>` selects it. Actions are called
 through `live_check.call(session, tool, action, params)`. Boxes come from `live_check.box(session, w, d, h)` (core § 10); a placed box is moved with `model.move(translate=...)`. Scenarios (each starts in the harness's scratch design):
 - `summary`: one box → counts per REQ-INS-001.
-- `object_info`: body and face Refs → types `BRepBody`, `BRepFace`.
+- `object_info`: body and face Refs → types `BRepBody`, `BRepFace`. Then (REQ-INS-017): `sketch.create` on `XY` with
+  `sketch.rectangle {"mode": "two_point", "p1": [0, 0], "p2": [20, 10]}`, `model.extrude` → `profiles`
+  has 1 entry, `index` 0, one loop of 4 `line` curves whose corners are (0,0), (20,0), (20,10), (0,10) mm;
+  a circle sketch → one `circle` curve, `radius` as drawn; an `XY` sketch with a line `[[0, 0], [0, 20]]` then a
+  rectangle `p1 [10, 0]`, `p2 [20, 20]` revolved (`model.revolve`) about `{"sketch": <ref>, "line": 0}` →
+  `axis.kind` `"sketch_line"`, `direction` [0, 1, 0], `origin` [0, 0, 0]; the same on a sketch on a construction plane
+  offset 5 mm in Z → `origin` z 5 mm (settles `ProfileCurve.geometry` sketch-space coordinates, `Line3D` /
+  `sketchToModelSpace` and the `{"sketch", "line"}` index); revolve about `"Y"` → `kind` `"origin"`, `name` `"Y"`; an
+  ellipse sketch extrude → `type` `"ellipse"` with first point equal to last.
 - `list_bodies`: two boxes, `limit` 1 → `next_offset` 1; token round-trip.
 - `list_faces`: 20 × 10 × 5 mm box → 6 plane faces with ±axis normals.
 - `list_edges`: 20 × 10 × 5 mm box → 12 line edges summing to 140 mm.

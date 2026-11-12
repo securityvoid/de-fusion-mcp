@@ -581,6 +581,17 @@ class AxisSpec(Spec):
 
         if isinstance(self.raw, str) and self.raw in _ORIGIN_AXES:
             return getattr(_origin_component(rs), _ORIGIN_AXES[self.raw])
+        if isinstance(self.raw, dict) and "line" in self.raw:
+            where = rs.path or "axis"
+            sketch = resolve_ref(("Sketch",), self.raw["sketch"], rs.child(where + ".sketch"))
+            lines, n = sketch.sketchCurves.sketchLines, self.raw["line"]
+            if not 0 <= n < lines.count:
+                have = "no lines" if not lines.count else "%d lines (0-%d)" % (lines.count, lines.count - 1)
+                raise ActionError(
+                    INVALID_PARAMS,
+                    "%s: line %d is out of range; sketch '%s' has %s" % (where, n, sketch.name, have),
+                )
+            return lines.item(n)
         e = resolve_ref(("ConstructionAxis", "Edge", "SketchLine"), self.raw, rs)
         if isinstance(e, _cls("Edge")) and not isinstance(e.geometry, adsk.core.Line3D):
             raise ActionError(INVALID_PARAMS, "%s: the edge is not linear" % (rs.path or "axis"))
@@ -600,6 +611,10 @@ def _axis(v):
         return v
     if isinstance(v, str) and v in _ORIGIN_AXES:
         return AxisSpec(v)
+    if isinstance(v, dict) and "sketch" in v:
+        if set(v) != {"sketch", "line"} or isinstance(v["line"], bool) or not isinstance(v["line"], int):
+            raise ValueError('expected {"sketch": Ref, "line": int}')
+        return AxisSpec({"sketch": _ref_shape(v["sketch"]), "line": v["line"]})
     return AxisSpec(_ref_shape(v))
 
 
@@ -611,7 +626,8 @@ Plane = Annotated[
 ]
 Axis = Annotated[
     Any, BeforeValidator(_axis),
-    WithJsonSchema({"description": "\"X\", \"Y\", \"Z\", or a Ref to a construction axis, linear edge or sketch line.",
+    WithJsonSchema({"description": "\"X\", \"Y\", \"Z\", a Ref to a construction axis, linear edge or sketch line, "
+                                   "or {sketch: Ref, line: n} (n = index in the sketch's lines).",
                     "oneOf": [{"type": "string"}, {"type": "object"}]}),
     RefMarker("Axis"),
 ]
@@ -622,10 +638,11 @@ class ProfileSpec(Spec):
     sketch: Any
     index: Any  # None | int | tuple[int, ...]
 
-    def resolve(self, rs):
+    def resolve(self, rs, entry=None):
         import adsk.core
 
         where = rs.path or "profile"
+        prefix = "entry %d: " % entry if entry is not None else ""
         sketch = resolve_ref(("Sketch",), self.sketch, rs.child(where + ".sketch"))
         profiles = list(sketch.profiles)
 
@@ -633,8 +650,9 @@ class ProfileSpec(Spec):
             if i >= len(profiles):
                 raise ActionError(
                     INVALID_PARAMS,
-                    "%s: profile index %d out of range (sketch has %d profiles)"
-                    % (where, i, len(profiles)),
+                    "%s%s: profile %d is out of range; sketch '%s' has %d profiles"
+                    % (prefix, where, i, sketch.name, len(profiles)),
+                    ["use an index in 0-%d" % (len(profiles) - 1) if profiles else "the sketch has no profiles"],
                 )
             return profiles[i]
 
@@ -642,7 +660,7 @@ class ProfileSpec(Spec):
             if len(profiles) != 1:
                 raise ActionError(
                     INVALID_PARAMS,
-                    "%s: sketch has %d profiles; give index" % (where, len(profiles)),
+                    "%s%s: sketch has %d profiles; give index" % (prefix, where, len(profiles)),
                 )
             return profiles[0]
         if isinstance(self.index, int):
@@ -653,11 +671,36 @@ class ProfileSpec(Spec):
         return coll
 
 
+@dataclass(frozen=True)
+class ProfileListSpec(Spec):
+    entries: tuple  # of ProfileSpec
+
+    def resolve(self, rs):
+        import adsk.core
+
+        coll = adsk.core.ObjectCollection.create()
+        for k, entry in enumerate(self.entries):
+            got = entry.resolve(rs, entry=k)
+            for p in (got if isinstance(got, adsk.core.ObjectCollection) else [got]):
+                coll.add(p)
+        return coll
+
+
 def _is_index(i):
     return isinstance(i, int) and not isinstance(i, bool) and i >= 0
 
 
 def _profile(v):
+    if isinstance(v, (ProfileSpec, ProfileListSpec)):
+        return v
+    if isinstance(v, (list, tuple)):
+        if not v:
+            raise ValueError("profile list must not be empty")
+        return ProfileListSpec(tuple(_profile_entry(e) for e in v))
+    return _profile_entry(v)
+
+
+def _profile_entry(v):
     if isinstance(v, ProfileSpec):
         return v
     if not isinstance(v, dict) or "sketch" not in v or set(v) - {"sketch", "index"}:
@@ -674,9 +717,10 @@ def _profile(v):
 
 Profile = Annotated[
     Any, BeforeValidator(_profile),
-    WithJsonSchema({"description": "{sketch: Ref, index: int | [int, ...]}; index may be omitted only "
-                                   "when the sketch has exactly one profile.",
-                    "type": "object", "required": ["sketch"]}),
+    WithJsonSchema({"description": "{sketch: Ref, index: int | [int, ...]} or a non-empty list of such "
+                                   "entries; index may be omitted only when the sketch has exactly one profile.",
+                    "oneOf": [{"type": "object", "required": ["sketch"]},
+                              {"type": "array", "minItems": 1, "items": {"type": "object"}}]}),
     RefMarker("Profile"),
 ]
 

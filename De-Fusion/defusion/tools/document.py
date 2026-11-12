@@ -7,7 +7,9 @@ import asyncio
 import contextlib
 import itertools
 import json
+import os
 import pathlib
+import shutil
 import tempfile
 import time
 from typing import Literal
@@ -240,7 +242,7 @@ def _hub(ctx, hub=None):
 def _abs_path(p, must_exist):
     path = pathlib.Path(p).expanduser()
     if not path.is_absolute():
-        raise ActionError(INVALID_PARAMS, "path must be absolute")
+        raise ActionError(INVALID_PARAMS, "path must be absolute", ["pass an absolute path"])
     if must_exist:
         if not path.is_file():
             raise ActionError(NOT_FOUND, "no file at %s" % path)
@@ -599,7 +601,7 @@ def set_read_only(ctx, documents: bulk(str) | None = None, read_only: bool = Tru
         df = guard.saved_file(doc)
         if df is None:
             ctx.fail(INVALID_PARAMS, "save the document first, or wait for its upload")
-        fresh = guard.fresh_file(ctx, df)
+        fresh, _ = guard.fresh_file(ctx, df)
         guard.check_folder(ctx, guard.folder_path(fresh.parentFolder))
         if fresh.isReadOnly == read_only:
             return {**_doc_summary(doc), "read_only": read_only, "changed": False}
@@ -688,13 +690,168 @@ def datafile_move(ctx, files: bulk(str), folder: str) -> dict:
     return ctx.bulk(files, one)
 
 
-ImportFormat = Literal["f3d", "step", "iges", "sat", "smt", "dxf", "svg"]
+UPLOAD_WAIT = 120  # seconds per entry (design § 6.13)
+UPLOAD_SETTLE = 30  # seconds to wait for every created file to get its cloud id
+
+
+def _scan(folder):
+    """``(files, unlisted)``: the listable files of ``folder`` and how many items raised when read."""
+    files, unlisted = [], 0
+    try:
+        items = _items(folder.dataFiles)
+    except Exception:
+        return files, 1
+    for f in items:
+        try:
+            f.id
+            files.append(f)
+        except Exception:
+            unlisted += 1
+    return files, unlisted
+
+
+@action("document", access="write", timeout=300, undo_group=False, edits_document="none")
+def datafile_upload(ctx, paths: bulk(str), folder: str | None = None, read_only: bool = True) -> dict:
+    """Upload local .f3d or .f3z files to a cloud folder (an id or a path like "Project/Folder") without opening them.
+
+    paths: 1 to 50 absolute paths of local files, uploaded in order; each file name (without the
+    extension) must be new in the folder and appear once per call. Use this for .f3z (import takes
+    .f3d only), then call document.open on the file. A multi-document .f3z makes Fusion create
+    several cloud files: the entry describes the root (the file named like the local file) and lists
+    all of them in "created". Shared by every entry: folder, read_only.
+    folder defaults to the folder limit when one is set, else the active project's root folder.
+    read_only (default true) locks every created file and verifies each (up to 10 tries, 1 s apart).
+    An upload waits up to 120 s, so the worst case per entry is 120 s + created files x (open + 10 s
+    lock verify) and a list of more than 2 entries is expected to become a job. Returns {"results":
+    [{"input", "ok", "result" | "error"}], "ok": n, "failed": n}; each result is {"id", "name",
+    "path", "version_number", "read_only"} plus "created" ([{"id", "name", "path"}], only when more
+    than one file was created) and "warnings" when a temporary close or re-activation failed.
+    """
+    if folder is None:
+        folder = ctx.folder_limit
+        if folder is None:
+            root = getattr(ctx.app.data.activeProject, "rootFolder", None)
+            if root is None:
+                ctx.fail(INVALID_PARAMS, "no active project", ["pass folder"])
+            folder = root.id
+    target = _folder(ctx, folder)
+    stems = []
+
+    def one(path):
+        import adsk.core
+
+        p = _abs_path(path, True)
+        if p.suffix.lower() not in (".f3d", ".f3z"):
+            ctx.fail(INVALID_PARAMS, "%s is not a .f3d or .f3z file" % p.name, ["use a .f3d or .f3z file"])
+        where = guard.folder_path(target)
+        before, unlisted_before = _scan(target)
+        if unlisted_before:
+            ctx.fail(FUSION_ERROR, "could not list %s before uploading %s" % (where, p.name),
+                     ["retry the upload"])
+        if any(_try(lambda: f.name) == p.stem for f in before):
+            ctx.fail(INVALID_PARAMS, "a file named %s exists in %s" % (p.stem, where),
+                     ["rename the local file or pass another folder"])
+        if p.stem in stems:
+            ctx.fail(INVALID_PARAMS, "%s appears twice in this call" % p.stem,
+                     ["rename the local file or pass another folder"])
+        stems.append(p.stem)
+        _need(target, "uploadFile")
+        retry = ["check document.list_folders; if the file is absent, retry the upload"]
+        known = {f.id for f in before}
+        future = target.uploadFile(str(p))
+        if future is None:
+            ctx.fail(FUSION_ERROR, "upload of %s did not start" % p.name, retry)
+        states = adsk.core.UploadStates
+        end = time.monotonic() + UPLOAD_WAIT
+        while future.uploadState not in (states.UploadFinished, states.UploadFailed):
+            if time.monotonic() >= end:
+                ctx.fail(FUSION_ERROR, "upload of %s did not finish in %d s" % (p.name, UPLOAD_WAIT),
+                         ["check document.list_folders; when the file appears, call "
+                          "document.open then document.set_read_only with read_only true"])
+            adsk.doEvents()
+            time.sleep(0.5)
+        if future.uploadState == states.UploadFailed:
+            ctx.fail(FUSION_ERROR, "upload of %s failed" % p.name, retry)
+        df = future.dataFile
+        settle = time.monotonic() + UPLOAD_SETTLE
+        while True:  # live: a created file lists with a local path as its id until its cloud id exists
+            after, unlisted = _scan(target)
+            created = [f for f in after if f.id not in known]
+            if all(f.id != df.id for f in created):
+                created.append(df)
+            if all(str(f.id).startswith("urn:") for f in created) or time.monotonic() >= settle:
+                break
+            adsk.doEvents()
+            time.sleep(1)
+        root = next((f for f in created if _try(lambda: f.name) == p.stem), df)
+        created.remove(root)
+        created.insert(0, root)
+        warnings = []
+        if read_only:
+            bad = _lock_created(ctx, created, warnings)
+            bad += ["an unlisted file in %s" % where] * unlisted
+            if bad:
+                extra = {"warnings": warnings} if warnings else {}
+                raise ActionError(READ_ONLY_NOT_APPLIED,
+                                  "uploaded %s but not read-only within 10 tries, 1 s apart: %s" % (p.name, "; ".join(bad)),
+                                  ["call document.open then document.set_read_only"], **extra)
+        out = {"id": root.id, "name": root.name, "path": _file_path(root), "version_number": root.versionNumber,
+               "read_only": read_only}
+        if len(created) > 1:
+            out["created"] = [{"id": f.id, "name": f.name, "path": _file_path(f)} for f in created]
+        if warnings:
+            out["warnings"] = warnings
+        return out
+
+    return ctx.bulk(paths, one)
+
+
+def _lock_created(ctx, files, warnings):
+    """Open each file transiently, lock it, close it, re-activate the previous document (design § 6.13 step 4).
+
+    Returns "<id> (<path>)" for every file not observed read-only, with the reason when it could not be opened."""
+    bad = []
+    for df in files:
+        label = "%s (%s)" % (df.id, _file_path(df))
+        prev = ctx.app.activeDocument
+        try:
+            doc = ctx.app.documents.open(df, True)
+        except Exception:
+            doc = None
+        if doc is None:
+            bad.append("%s: could not open it to lock it" % label)
+            continue
+        try:
+            try:
+                observed = bool(guard.set_read_only(ctx, doc, True, lambda f=df: ctx.app.data.findFileById(f.id)))
+            except Exception:
+                observed = False
+            if not observed:
+                bad.append(label)
+        finally:
+            try:
+                closed = doc.close(False)
+            except Exception:
+                closed = False
+            if not closed:
+                warnings.append("closing the temporary document failed (%s)" % _try(lambda: doc.name))
+            if prev is not None:
+                try:
+                    back = prev.activate()
+                except Exception:
+                    back = False
+                if not back:
+                    warnings.append("re-activating the original document failed (%s)" % _try(lambda: prev.name))
+    return bad
+
+
+ImportFormat = Literal["f3d", "f3z", "step", "iges", "sat", "smt", "dxf", "svg"]
 MeshFormat = Literal["stl", "obj", "3mf"]
 MeshUnit = Literal["mm", "cm", "m", "in", "ft"]
 
 # format -> (extensions, ImportManager method, is 2D)
 _IMPORT = {
-    "f3d": (("f3d", "f3z"), "createFusionArchiveImportOptions", False),
+    "f3d": (("f3d",), "createFusionArchiveImportOptions", False),
     "step": (("step", "stp"), "createSTEPImportOptions", False),
     "iges": (("iges", "igs"), "createIGESImportOptions", False),
     "sat": (("sat",), "createSATImportOptions", False),
@@ -715,7 +872,8 @@ def import_(ctx, paths: bulk(str), format: ImportFormat | None = None,
     """Import local CAD files (3D into a new document or the active design; dxf/svg into the active design).
 
     paths: 1 to 50 absolute paths of existing files, imported in order. Shared by every entry:
-    format, target, component, plane. Returns {"results": [{"input", "ok", "result" | "error"}],
+    format, target, component, plane. f3d means .f3d only; for .f3z call document.datafile_upload
+    then document.open. Returns {"results": [{"input", "ok", "result" | "error"}],
     "ok": n, "failed": n}; each result is {"target", "document", "created"}.
     """
     return ctx.bulk(paths, lambda path: _import_one(ctx, path, format, target, component, plane))
@@ -723,6 +881,8 @@ def import_(ctx, paths: bulk(str), format: ImportFormat | None = None,
 
 def _import_one(ctx, path, format, target, component, plane):
     src = _abs_path(path, True)
+    if format == "f3z" or src.suffix.lower() == ".f3z":  # checked first, whatever `format` is
+        ctx.fail(INVALID_PARAMS, "f3z cannot be imported directly; use document.datafile_upload then document.open")
     fmt = _format_for(src, format, _IMPORT)
     _, method, flat = _IMPORT[fmt]
     if target is None:
@@ -814,23 +974,55 @@ def _import_mesh_one(ctx, design, comp, units, path, format):
 # --- destructive actions ---------------------------------------------------------------------------------
 
 
-@action("document", access="destructive", timeout=60, undo_group=False, edits_document="none")
+@action("document", access="destructive", timeout=120, undo_group=False, edits_document="none")
 def close(ctx, documents: bulk(str) | None = None) -> dict:
     """Close documents, discarding unsaved changes (call save first to keep them).
 
     documents: 1 to 50 open document names or ids, closed in order; omitted means the active
-    document. No shared parameters; confirm is needed once per call. Returns {"results": [{"input",
-    "ok", "result" | "error"}], "ok": n, "failed": n}; each result is {"closed", "discarded_changes"}.
+    document. No shared parameters; confirm is needed once per call. A saved document that the
+    server made editable is made read-only again first (up to 10 tries, 1 s apart, so about 10 s
+    per entry). Returns {"results": [{"input", "ok", "result" | "error"}], "ok": n, "failed": n};
+    each result is {"closed", "discarded_changes", "relocked"} plus "warnings" when the document
+    may still be editable (call document.set_read_only to lock it).
     """
 
     def one(document):
         doc = _doc(ctx, document)
         modified, summary = bool(doc.isModified), _doc_summary(doc)
-        if not doc.close(False):
-            ctx.fail(FUSION_ERROR, "could not close %s" % doc.name)
-        return {"closed": summary, "discarded_changes": modified}
+        df = guard.saved_file(doc)
+        relocked, warn = False, False
+        if df is not None and df.id in guard.UNLOCKED:
+            relocked = _relock(ctx, doc, df)
+            warn = not relocked
+        elif df is None and not guard.never_saved(doc):  # upload pending
+            dropped = [k for k, v in list(guard.UNLOCKED.items()) if v == doc.name]
+            for k in dropped:
+                guard.forget(k)
+            warn = bool(dropped)
+        try:
+            if not doc.close(False):
+                ctx.fail(FUSION_ERROR, "could not close %s" % doc.name)
+        finally:
+            if df is not None:
+                guard.forget(df.id)
+        out = {"closed": summary, "discarded_changes": modified, "relocked": relocked}
+        if warn:
+            out["warnings"] = ["%s is still editable; call document.set_read_only to lock it" % doc.name]
+        return out
 
     return ctx.bulk(documents or [None], one)
+
+
+def _relock(ctx, doc, df):
+    """Make ``df`` read-only again before ``doc`` closes; True only on a fresh-lookup observation."""
+    try:
+        fresh, is_fresh = guard.fresh_file(ctx, df)
+        guard.check_folder(ctx, guard.folder_path(fresh.parentFolder))
+        if fresh.isReadOnly and is_fresh:
+            return True
+        return bool(guard.set_read_only(ctx, doc, True, lambda: ctx.app.data.findFileById(df.id)))
+    except Exception:
+        return False
 
 
 @action("document", access="destructive", timeout=60, undo_group=False, edits_document="none")
@@ -1241,6 +1433,9 @@ async def _import(session):
         r = await _one(session, "import", {"paths": [tmp + "/l.dxf"], "target": "active"})
         assert len(r["created"]) == 1, r
         await _eerr(session, "import", {"paths": [tmp + "/l.dxf"], "target": "new_document"}, "INVALID_PARAMS")
+        (pathlib.Path(tmp) / "x.f3z").write_text("")
+        first = await _entry(session, "import", {"paths": [tmp + "/x.f3z"]})
+        assert not first["ok"] and first["error"]["code"] == "INVALID_PARAMS" and "datafile_upload" in first["error"]["message"], first
 
 
 def _cube_stl():
@@ -1349,6 +1544,165 @@ async def _auto_unlock(session):
         _made_editable(await _lc().call(session, "sketch", "create", {"plane": "XY"}), name)
         got = await _poll(session, path, "read_only", lambda v: v is False, 5)
         assert got is False, "read_only after auto-unlock: %r" % (got,)
+        r = await _one(session, "close", {"documents": [doc_id], "confirm": True})
+        assert r["relocked"] is True and "warnings" not in r, r
+        got = await _poll(session, path, "read_only", lambda v: v is True, 5)
+        assert got is True, "read_only after close: %r" % (got,)
+
+
+async def _upload_env(session, params, seconds=900):
+    """``datafile_upload`` as an envelope; a call that became a job (many created files) is polled to its end."""
+    env = await _env(session, "datafile_upload", params)
+    if not env["ok"] or "job_id" not in env["result"]:
+        return env
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        job = await _lc().call(session, "server", "job_status", {"job_id": env["result"]["job_id"]})
+        state = job["result"]["state"] if job["ok"] else "error"
+        if state == "done":
+            return {"ok": True, "result": job["result"]["result"]}
+        assert state == "running", json.dumps(job)[:400]
+        await asyncio.sleep(3)
+    raise AssertionError("datafile_upload job still running after %d s" % seconds)
+
+
+async def _upload_open(session, project, local, name, while_open=None, after=None):
+    """Upload ``local`` (read_only true), check the entry, open the file (``while_open(opened)`` runs
+    then), close it, run ``after(fid)`` and delete the file, always (design § 10.2)."""
+    scratch = await _active_id(session)
+    r = await _one(session, "datafile_upload", {"paths": [local]})
+    try:
+        path = "%s/%s" % (project, name)
+        assert r["id"] and r["name"] == name and r["path"] == path, r
+        assert r["version_number"] >= 1 and r["read_only"] is True, r
+        assert (await _d(session, "datafile_get", {"file": path}))["read_only"] is True
+        opened = await _one(session, "open", {"files": [path]})
+        try:
+            assert opened["already_open"] is False and opened["type"] == "design", opened
+            if while_open:
+                await while_open(opened)
+        finally:
+            await _one(session, "close", {"documents": [opened["id"]], "confirm": True})
+            await _gone(session, name)
+            await _env(session, "activate", {"document": scratch})
+        if after:
+            await after(r["id"])
+    finally:
+        await _env(session, "datafile_delete", {"files": [r["id"]], "confirm": True})
+    await _err(session, "datafile_get", {"file": r["id"]}, "NOT_FOUND")
+
+
+async def _datafile_upload(session):
+    await _lc().box(session, 10, 10, 10)
+    project, name = await _project(session), _unique()
+    with tempfile.TemporaryDirectory() as tmp:
+        local = "%s/%s.f3d" % (tmp, name)
+        await _one(session, "export", {"paths": [local]})
+        (pathlib.Path(tmp) / "x.step").write_text("x")
+
+        async def after(fid):  # the file still exists here, so a second upload collides
+            await _eerr(session, "datafile_upload", {"paths": [local]}, "INVALID_PARAMS")
+            await _eerr(session, "datafile_upload", {"paths": [tmp + "/missing.f3d"]}, "NOT_FOUND")
+            await _eerr(session, "datafile_upload", {"paths": [tmp + "/x.step"]}, "INVALID_PARAMS")
+            await _eerr(session, "datafile_upload", {"paths": ["rel/x.f3d"]}, "INVALID_PARAMS")
+
+        await _upload_open(session, project, local, name, after=after)
+
+
+_F3Z_PROBE = (
+    "try:\n"
+    "    im = adsk.core.Application.get().importManager\n"
+    "    d = im.importToNewDocument(im.createFusionArchiveImportOptions(%r))\n"
+    "    msg = 'local f3z import: ok'\n"
+    "    if d: d.close(False)\n"
+    "except Exception as e:\n"
+    "    msg = 'refused: %%s' %% e\n"
+    "msg"
+)
+
+
+def _f3z_names(src, stem):
+    """Every file name the source f3z can create: its f3d entry stems, the display names of its design
+    description and the local file's stem."""
+    import zipfile
+
+    names = {stem}
+    with zipfile.ZipFile(src) as z:
+        for n in z.namelist():
+            if n.endswith(".f3d"):
+                names.add(n[:-4])
+        if "DesignDescription.json" in z.namelist():
+            desc = json.loads(z.read("DesignDescription.json"))
+            for graph in desc.get("designDescription", {}).get("designGraphs", []):
+                for o in graph.get("designObjects", []):
+                    names.update(x for x in (o.get("friendlyName"), o.get("displayName")) if x)
+    return names
+
+
+async def _folder_files(session, project):
+    out, off = {}, 0
+    while off is not None:
+        page = await _d(session, "list_folders", {"folder": project, "offset": off, "limit": 100})
+        out.update({i["id"]: i for i in page["items"] if i["kind"] == "file"})
+        off = page["next_offset"]
+    return out
+
+
+async def _delete_created(session, items):
+    """Delete the created files; Fusion refuses a file other files reference, so retry until none is left."""
+    left = list(items)
+    while left:
+        failed = []
+        for i in left:
+            env = await _env(session, "datafile_delete", {"files": [i["id"]], "confirm": True})
+            if not (env["ok"] and env["result"]["results"][0]["ok"]):
+                failed.append(i)
+        assert len(failed) < len(left), "cleanup could not delete: %s" % [i["path"] for i in failed]
+        left = failed
+
+
+async def _datafile_upload_f3z(session):
+    src = os.environ.get("DEFUSION_LIVE_F3Z")
+    if not src:
+        print("datafile_upload_f3z: DEFUSION_LIVE_F3Z unset")
+        return
+    scratch = await _active_id(session)
+    project, name = await _project(session), _unique()
+    expected = _f3z_names(src, name)
+    before = await _folder_files(session, project)
+    with tempfile.TemporaryDirectory() as tmp:
+        local = "%s/%s.f3z" % (tmp, name)
+        shutil.copyfile(src, local)
+        await _eerr(session, "import", {"paths": [local]}, "INVALID_PARAMS")
+        env = await _upload_env(session, {"paths": [local]})
+        try:
+            made = [i for k, i in (await _folder_files(session, project)).items() if k not in before]
+            print("datafile_upload_f3z: created %s" % json.dumps([i["name"] for i in made]))
+            assert env["ok"] and "results" in env["result"], json.dumps(env)[:900]
+            assert env["result"]["results"][0]["ok"], json.dumps(env)[:900]
+            r = env["result"]["results"][0]["result"]
+            assert r["read_only"] is True and r["version_number"] >= 1, r
+            listed = r.get("created") or [{"id": r["id"], "name": r["name"], "path": r["path"]}]
+            assert r["id"] == listed[0]["id"] and (r["name"] == name or len(listed) > 1), r
+            assert {c["id"] for c in listed} == {i["id"] for i in made}, (listed, made)
+            for c in listed:
+                assert (await _d(session, "datafile_get", {"file": c["id"]}))["read_only"] is True, c
+            opened = await _one(session, "open", {"files": [r["path"]]})
+            try:
+                refs = await _d(session, "list_references", {"document": opened["id"], "nested": True})
+                print("datafile_upload_f3z: references %s; document %s" % (json.dumps(refs)[:600], json.dumps(opened)[:400]))
+            finally:
+                await _one(session, "close", {"documents": [opened["id"]], "confirm": True})
+                await _gone(session, opened["name"])
+                await _env(session, "activate", {"document": scratch})
+        finally:
+            unexpected = [i["name"] for i in made if i["name"] not in expected]
+            print("datafile_upload_f3z: names outside the source f3z: %s" % json.dumps(unexpected))
+            await _delete_created(session, [i for i in made if i["name"] in expected])
+            assert not unexpected, "created files not in the source f3z were left in place: %s" % unexpected
+        probe = await _lc().call(session, "script", "execute_python", {"confirm": True, "code": _F3Z_PROBE % local})
+        print("datafile_upload_f3z: %s" % (probe["result"]["value"] if probe["ok"] else json.dumps(probe["error"])[:200]))
+        await _env(session, "activate", {"document": scratch})
 
 
 async def _folder_limit(session):
@@ -1379,6 +1733,9 @@ async def _folder_limit(session):
                 assert env["ok"], json.dumps(env)[:300]
             finally:
                 await _close_quiet(limited, new["id"])
+            with tempfile.TemporaryDirectory() as tmp:
+                (pathlib.Path(tmp) / "u.f3d").write_text("x")
+                await _err(limited, "datafile_upload", {"paths": [tmp + "/u.f3d"], "folder": project}, "NOT_ALLOWED")
 
 
 LIVE_SCENARIOS = [
@@ -1411,6 +1768,8 @@ LIVE_SCENARIOS = [
     ("roundtrip", "document.import", _roundtrip),
     ("bulk", "document.open", _bulk),
     ("save_locks", "document.save", _save_locks),
+    ("datafile_upload", "document.datafile_upload", _datafile_upload),
+    ("datafile_upload_f3z", "document.datafile_upload", _datafile_upload_f3z),
     ("auto_unlock", "sketch.create", _auto_unlock),
     ("folder_limit", "document.save_as", _folder_limit),
 ]

@@ -796,3 +796,13 @@ def test_thread_left_hand_unsupported_without_member(env):
     env.coll("threadFeatures").hide_input("isRightHanded")
     assert env.err("thread", faces=[env.r(f)], right_handed=False).code == UNSUPPORTED
     env.call("thread", faces=[env.r(f)])  # right-handed needs no member
+
+
+def test_extrude_accepts_profile_list_and_revolve_sketch_line_axis(env):
+    sk, _ = extrude_env(env)
+    sk2, _ = extrude_env(env)
+    line = sk.add_line()
+    env.call("extrude", profile=[env.profile(sk), env.profile(sk2)], distance=5)
+    assert list(last_input(env, "extrudeFeatures").args[0]) == [sk.profiles.item(0), sk2.profiles.item(0)]
+    env.call("revolve", profile=env.profile(sk), axis={"sketch": env.r(sk), "line": 0})
+    assert last_input(env, "revolveFeatures").args[1] is line

@@ -54,6 +54,15 @@
     `tests/test_inspect.py`
   - _Verify_: `pytest -q tests/test_inspect.py -k "deviation or stats or sample or compare_meshes"`
 
+- [x] **TASK-INS-009** [REQ-INS-017, REQ-INS-015]: object_info profiles and axis
+  - § 2.2.1: public `profile_index`, `profile_loops`; extend `object_info` for `ExtrudeFeature` and
+    `RevolveFeature` (`profiles`, revolve `axis`); extend the fakes per § 3.1 additively; tests per
+    § 3.1; curve records tagged with profile position and loop index, returned via the core paging helper (`ctx.page` with `build`, so only the requested slice is built; `limit` default 25, `offset`),
+    spline/ellipse sampled at a fixed 16 points; tests: every REQ-INS-017 acceptance case.
+  - _Reuse_: `_pt`, `_vec`, `_index_of`, `_surface`-style per-key guard in `object_info` (TASK-INS-001); `ctx.length_out`
+  - _Output_: `De-Fusion/defusion/tools/inspect.py`, `tests/fakes/adsk/core.py`, `tests/fakes/adsk/fusion.py`, `tests/test_inspect.py`
+  - _Verify_: `pytest -q tests/test_inspect.py -k "object_info or profile"`
+
 ## Phase 2 — Live
 - [x] **TASK-INS-007** [REQ-INS-016]: LIVE_SCENARIOS
   - Add the § 3.2 scenarios (boxes via `live_check.box`, core design § 10) to `inspect.py`. Waits on the `sketch`, `model` and
@@ -72,3 +81,8 @@
   - _Reuse_: TASK-INS-007 scenarios; `server.restart_addin`; `script.execute_python` for API probing.
   - _Output_: `De-Fusion/defusion/tools/inspect.py`
   - _Verify_: `python scripts/live_check.py --only inspect`
+- [x] **TASK-INS-010** [REQ-INS-017, REQ-INS-016]: Live profiles and axis
+  - Waits on TASK-INS-009 and TASK-CORE-032. Extend the `object_info` scenario per § 3.2 (the scenario count stays 14); fix any Fusion difference from § 2.2.1 in code and design.
+  - _Reuse_: `live_check.box`, `sketch.create`, `sketch.line`, `sketch.rectangle`, `model.extrude`, `model.revolve`, `model.construction_plane`
+  - _Output_: `De-Fusion/defusion/tools/inspect.py`, `docs/specs/inspect/design.md`
+  - _Verify_: `python scripts/live_check.py --only inspect.object_info` and `python scripts/live_check.py --only inspect`

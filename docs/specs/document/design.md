@@ -15,10 +15,10 @@ new document changes the active document mid-call). Each action does all its Fus
 its one dispatcher item, so `NOT_EXECUTED` means nothing ran; a call that outlives its timeout
 while running becomes a job (core design § 4) whose `done` result is the action's normal result.
 
-Thirteen actions take a list of 1 to 50 entries and return per-entry results (§ 2.7, core design
+Fourteen actions take a list of 1 to 50 entries and return per-entry results (§ 2.7, core design
 § 5.12). Every action declares `edits_document` (§ 3; core design § 5.1, § 5.13): actions that edit
-an open document make a saved read-only one editable first, and `save`/`save_as` make the saved
-file read-only again (§ 6.4, § 6.5). With a folder limit (core design § 6.4) every `folder`/`file`
+an open document make a saved read-only one editable first, `save`/`save_as` make the saved
+file read-only again (§ 6.4, § 6.5) and `close` re-locks what the guard unlocked (§ 7.1). With a folder limit (core design § 6.4) every `folder`/`file`
 address and every save target must be inside it (§ 2.8).
 
 `Document.save`, `saveAs`, `close` and `Documents.add`/`open` are not allowed inside Fusion
@@ -109,6 +109,7 @@ the list parameter.
 - String entries: `paths` (local file paths), `files` (cloud file id or path, § 2.2), `documents`
   (document selector, § 2.1). `documents` is `bulk(str) | None = None`; `None` means `[None]`, one
   entry for the active document (`input: null`).
+- `paths` of `datafile_upload` are local `.f3d`/`.f3z` files (§ 6.13).
 - Model entries (pydantic, `extra="forbid"`): `SaveAsEntry {document: str | None = None, name:
   FileName}` and `RenameEntry {file: str, name: FileName}`.
 - Every other parameter is shared by all entries. Shared parameters that need Fusion work
@@ -131,12 +132,13 @@ scenario helper `De-Fusion/defusion/tools/live_common.py` (`_fresh` closes its d
 ### 2.8 Folder limit
 With `ctx.folder_limit` set (core design § 6.4, § 5.13): `_folder`/`_file` reject anything outside
 it (`NOT_ALLOWED`, per entry in list actions, call-level for a shared `folder`); `save` (through
-`guard.ensure_editable`), `save_as` (its folder) and `set_read_only` (the document's file folder) are
-limited; `save_as` defaults its `folder` to the limit; `import` into the active design,
+`guard.ensure_editable`), `save_as` (its folder), `datafile_upload` (its folder) and `set_read_only` (the document's file
+folder) are limited; `save_as` and `datafile_upload` default their `folder` to the limit;
+`close` re-locks only a file inside the limit (§ 7.1); `import` into the active design,
 `import_mesh`, `advance_to_latest` and `update_all_references` are limited through
 `guard.ensure_editable`. Not limited: `list_hubs`, `list_projects`, `list_open`, `list_references`,
-`export`, `create`, `activate`, `set_name` (never-saved documents only), `close`, and imports into a
-new document.
+`export`, `create`, `activate`, `set_name` (never-saved documents only), `close` (the close itself; its re-lock is
+limited, § 7.1), and imports into a new document.
 
 ## 3. Action table
 | Action | Access | Timeout (s) | `edits_document` | List param (§ 2.7) | Section |
@@ -162,22 +164,24 @@ new document.
 | `datafile_refresh` | write | 60 | `none` | `files` | 6.9 |
 | `datafile_copy` | write | 120 | `none` | `files` | 6.10 |
 | `datafile_move` | write | 120 | `none` | `files` | 6.10 |
+| `datafile_upload` | write | 300 | `none` | `paths` | 6.13 |
 | `import` | write | 300 | `action` | `paths` | 6.11 |
 | `import_mesh` | write | 180 | `active` | `paths` | 6.12 |
-| `close` | destructive | 60 | `none` | `documents` | 7.1 |
+| `close` | destructive | 120 | `none` | `documents` | 7.1 |
 | `datafile_delete` | destructive | 60 | `none` | `files` | 7.2 |
 
 `edits_document` `action` and `active` add `preserve_read_only` (core design § 5.1). Timeouts cover
 the whole call; a long list that outlives it becomes a job (core design § 4, § 5.12). The worst
 case is about 10 s per guard or lock verify per entry, so a list of more than timeout/10 entries is
-expected to become a job.
+expected to become a job; for `datafile_upload` it is 120 s + 30 s + created_files × (open + 10 s lock verify) per entry, so a list of more than 2
+entries, or one entry with many created files, is expected to become a job; the help text states the same.
 
 Python cannot name a function `import`; it is `def import_(...)` registered with
 `name="import"`.
 
 ## 4. Feature-detected members
 `Document.advanceToLatest`, `Document.updateAllReferences`, `Document.allDocumentReferences`
-(only when `nested`), `DataFile.refresh`, `DataFile.copy`, `DataFile.move`, every
+(only when `nested`), `DataFile.refresh`, `DataFile.copy`, `DataFile.move`, `DataFolder.uploadFile`, every
 `ExportManager.create*ExportOptions` and `ImportManager.create*ImportOptions` method of § 8 and
 § 9, `ImportManager.importToTarget`, the mesh option properties of § 8.2, and
 `MeshBodies.add`. Each missing member → `UNSUPPORTED` (§ 2.5). The unit tests remove each from the
@@ -395,13 +399,15 @@ def datafile_move(ctx, files: bulk(str), folder: str) -> dict
 
 ### 6.11 import
 ```python
-ImportFormat = Literal["f3d", "step", "iges", "sat", "smt", "dxf", "svg"]
+ImportFormat = Literal["f3d", "f3z", "step", "iges", "sat", "smt", "dxf", "svg"]
 def import_(ctx, paths: bulk(str), format: ImportFormat | None = None,
             target: Literal["new_document", "active"] | None = None,
             component: Component | None = None, plane: Plane | None = None) -> dict
 ```
 Steps 1–5 run per `path` entry of `paths` (§ 2.7); the other parameters are shared.
-1. `path` per § 2.6 (must exist); format from extension (§ 9) when omitted; when given and the extension is not one of
+1. `path` per § 2.6 (must exist); `format` `f3z` or extension `.f3z` (checked first, whatever
+   `format` is) → `INVALID_PARAMS` "f3z cannot be imported directly; use document.datafile_upload
+   then document.open" before any Fusion call; format from extension (§ 9) when omitted; when given and the extension is not one of
    that format's extensions (§ 9) → `INVALID_PARAMS`, as export step 2.
 2. `target` default: `new_document` for 3D formats, `active` for `dxf`/`svg`. `dxf`/`svg` with
    `new_document` → `INVALID_PARAMS` ("2D imports need an active design"). `component` or `plane`
@@ -440,6 +446,63 @@ Entry result: `{"meshes": [ctx.ref(m) ...], "base_feature": ctx.ref(bf) or null,
 z], "max": [x, y, z]} or null}` where `bbox` is the union of `m.boundingBox` in output length units
 (`ctx.length_out`), `null` if any mesh lacks `boundingBox`.
 
+### 6.13 datafile_upload
+```python
+UPLOAD_WAIT = 120   # seconds per entry
+UPLOAD_SETTLE = 30  # seconds, once per entry
+def datafile_upload(ctx, paths: bulk(str), folder: str | None = None,
+                    read_only: bool = True) -> dict
+```
+Call-level: `folder` omitted → `ctx.folder_limit` when set, else the active project's root folder
+(`ctx.app.data.activeProject.rootFolder`; none → `INVALID_PARAMS` "no active project; pass folder"),
+which differs from `save_as` only in having this fallback. A given or defaulted path resolves once
+with `_folder` (§ 2.2; outside the limit → `NOT_ALLOWED`, missing → `NOT_FOUND`).
+Per `path` entry (§ 2.7), first scan `folder.dataFiles` once for ids and names (the pre-upload scan):
+1. `p = _abs_path(path, True)` (§ 2.6; missing → `NOT_FOUND`); not absolute →
+   `INVALID_PARAMS` (hint "pass an absolute path"); extension not `.f3d`/`.f3z` →
+   `INVALID_PARAMS` (hint "use a .f3d or .f3z file"). A name in the pre-upload scan equal to `p.stem` →
+   `INVALID_PARAMS` ("a file named <name> exists in <path>", hint "rename the local file or pass
+   another folder"). `p.stem` equal to an earlier entry's stem in this call → `INVALID_PARAMS`
+   ("<name> appears twice in this call", same hint). Fusion names the upload `p.stem`.
+2. Feature-detect `DataFolder.uploadFile` (§ 2.5). `future =
+   folder.uploadFile(str(p))`; `None` → `FUSION_ERROR` (hint "check document.list_folders; if the
+   file is absent, retry the upload"). `uploadFile` is asynchronous and, like `Documents.open`, must run outside a
+   Command event (the dispatcher is a CustomEvent handler, § 1).
+3. Poll `future.uploadState` every 0.5 s, calling `adsk.doEvents()` between polls, for at most
+   `UPLOAD_WAIT` seconds (about 40% of the 300 s action timeout for one entry; a longer list becomes
+   a job, § 3). `UploadFinished` → `df = future.dataFile`; `UploadFailed` → `FUSION_ERROR`
+   ("upload of <p.name> failed", same hint as step 2); still processing at the limit → `FUSION_ERROR` ("upload of
+   <p.name> did not finish in 120 s", hint "check document.list_folders; when the file appears, call
+   document.open then document.set_read_only with read_only true"). A multi-document `.f3z` makes
+   Fusion create several cloud files and `future.dataFile` may be any of them (a child), so
+   after `UploadFinished` scan `folder.dataFiles` once more; `created` = every
+   file in it whose id is not in the pre-upload scan plus `df`, de-duplicated, root first, where
+   root = the created file named `p.stem`, else `df`. A file another writer adds during the upload
+   cannot be told apart: it appears in `created` and is locked. A post-upload `folder.dataFiles`
+   item that raises counts as a created file not observed read-only (`read_only` true: step 4 names
+   it "an unlisted file in <path>"). Fusion lists a just-uploaded file with a local path as its id, so poll the scan every 0.5 s
+   (`adsk.doEvents()` between polls) for at most `UPLOAD_SETTLE` seconds until every created file has a cloud id (`urn:`); at the limit go on.
+4. `read_only` true: the lock path needs a document, so open each created file transiently, in
+   turn, each in its own `try` (a failure on one is recorded and the rest are still attempted):
+   `prev = ctx.app.activeDocument`; `doc = ctx.app.documents.open(f, True)` (`None` or a raise →
+   not locked, "could not open it to lock it"); `guard.set_read_only(ctx, doc, True, lambda:
+   ctx.app.data.findFileById(f.id))` (an `ActionError` or exception from it counts as not
+   observed); then in a `finally` `doc.close(False)` and `prev.activate()`
+   when `prev` is not `None` (a `doc.close(False)` returning False or raising adds "closing the temporary document failed" to the
+   entry's `warnings` list, a `prev.activate()` returning False or raising adds "re-activating the original
+   document failed"; neither is raised). Any file not observed → one `READ_ONLY_NOT_APPLIED` ("uploaded but <id> (<path>) not
+   read-only within 10 tries, 1 s apart", one id and cloud path per file not locked, hint "call
+   document.open then document.set_read_only"). The upload stays either way.
+5. Entry result `{"id": root.id, "name": root.name, "path": <_file_path(root)>, "version_number":
+   root.versionNumber, "read_only": read_only}` plus `"created": [{"id", "name", "path"} ...]`
+   (all created files, root included) only when `len(created) > 1`, and `"warnings": [..]` only when non-empty (`read_only` true only when every created file was observed). The caller
+   opens the file with `open`.
+
+Whether `.f3z` external references
+survive the upload is recorded by the live scenario (§ 10.3). Failure is fail-closed: an f3z that Fusion rejects or that
+never finishes is a `FUSION_ERROR` entry, which may leave created cloud files behind, found with
+`document.list_folders` then locked or deleted.
+
 ## 7. Destructive actions
 ### 7.1 close
 ```python
@@ -447,8 +510,33 @@ def close(ctx, documents: bulk(str) | None = None) -> dict
 ```
 Per `document` entry (§ 2.7). Always `doc.close(False)` (never `close(True)`, which can show a modal save prompt; callers that
 want to keep changes call `save` first). Record `modified = doc.isModified`, `summary =
-_doc_summary(doc)` before. `False` → `FUSION_ERROR`. → `{"closed": summary, "discarded_changes":
-modified}`. `confirm` is always required once per call (core design § 5.3), even for an unmodified document.
+_doc_summary(doc)` before.
+1. Re-lock, only when `df = guard.saved_file(doc)` is not `None` and `df.id in guard.UNLOCKED`
+   (core design § 5.13); otherwise `relocked` is false with no Fusion call and no warning, except
+   when `guard.saved_file(doc)` is `None` and `guard.never_saved(doc)` is false (upload pending):
+   every `UNLOCKED` entry whose value is `doc.name` is dropped with `guard.forget`, and if one was
+   dropped `relocked` is false with the step 2 warning.
+   `fresh, is_fresh = guard.fresh_file(ctx, df)`; `guard.check_folder(ctx, guard.folder_path(
+   fresh.parentFolder))`; `fresh.isReadOnly` already true and `is_fresh` (the
+   lookup, not the `df` fallback) → `guard.forget(df.id)`,
+   `relocked` true; else `guard.set_read_only(ctx, doc, True, lambda: ctx.app.data.findFileById(
+   df.id))` (activates `doc`, Make Read-Only, re-activates the previous document, verifies up to
+   10 × 1 s; the lock commands need the document active; a modified document is locked as is) and
+   `relocked` is its result. Any `ActionError` or exception in this step (folder limit, activation,
+   command) is caught: `relocked` false. Whatever the outcome, `guard.forget(df.id)` runs when the
+   document closes (step 3), so the registry never keeps a closed document.
+2. `relocked` false after an attempted re-lock or a dropped pending-upload entry → `warnings: ["<name> is still editable; call
+   document.set_read_only to lock it"]` (naming the document); the close in step 3 still happens.
+3. `doc.close(False)`; `False` → `FUSION_ERROR`.
+4. Entry result `{"closed": summary, "discarded_changes": modified, "relocked": <bool>}` plus
+   `"warnings": [..]` only when non-empty.
+
+`confirm` is always required once per call (core design § 5.3), even for an unmodified document.
+`preserve_read_only` is not a `close` parameter: with it the guard never unlocked the file, so it is
+not in the registry. A registry document that is no longer open cannot be re-locked here;
+`document.set_read_only` on its file (open it first) is the manual route. Make Read-Only
+is expected to succeed on a modified document (§ 10.3 records the observed result of the `auto_unlock` live scenario); when it is
+not observed the entry is the failure case of step 2.
 
 ### 7.2 datafile_delete
 ```python
@@ -497,7 +585,8 @@ missing.
 ### 9.1 Options
 | Format | Extensions | `ImportManager` call |
 |---|---|---|
-| f3d | `.f3d`, `.f3z` | `createFusionArchiveImportOptions(path)` |
+| f3d | `.f3d` | `createFusionArchiveImportOptions(path)` (documented for `.f3d` only) |
+| f3z | `.f3z` | none: rejected by § 6.11 step 1; upload with § 6.13 and `open` |
 | step | `.step`, `.stp` | `createSTEPImportOptions(path)` |
 | iges | `.iges`, `.igs` | `createIGESImportOptions(path)` |
 | sat | `.sat` | `createSATImportOptions(path)` |
@@ -534,7 +623,7 @@ re-activation; export keyword call, mesh options and `one_file_per_body` file li
 import target defaults and created-item diff; import_mesh base feature in parametric and none in
 direct; `help` timeout per § 3; no `PTransaction` command recorded for any action.
 
-List actions, guard and folder limit (with core `guard.VERIFY_DELAY` set to 0): for each of the 13
+List actions, guard and folder limit (with core `guard.VERIFY_DELAY` set to 0): for each of the 14
 list actions, a 3-entry call with a bad middle entry gives `ok: 2, failed: 1` in entry order with
 the middle entry's code, the singular parameter (`path`, `file`, `document`, top-level
 `name`) → `INVALID_PARAMS`, 0 and 51 entries → `INVALID_PARAMS` with no Fusion call, and the
@@ -558,13 +647,30 @@ with `preserve_read_only: true` on a read-only document → `READ_ONLY` with no 
 `create`, `set_name`, `export` and `close` of never-saved documents succeed, while `save` of an
 upload-pending document → `NOT_ALLOWED`.
 
+Re-lock on close (core `UNLOCKED` cleared per test): every REQ-DOC-028 case. `close` of a
+registered document issues `ActiveDocumentDeactivateCommand` before `close(False)`, reports
+`relocked`, never lets a lock failure, a folder-limit refusal or a raising command stop `close(False)`,
+and leaves unregistered and unsaved documents untouched (no command, no `warnings`).
+
+`datafile_upload` (fake `DataFolder.uploadFile` returning a `DataFileFuture` with `uploadState`
+and `dataFile`; fake `UploadStates`): every REQ-DOC-029 case, plus the folder default (limit, else
+active project root, else `INVALID_PARAMS`), `folder` outside the limit → call-level `NOT_ALLOWED`,
+`UploadFailed`, a never-finishing future (`UPLOAD_WAIT` monkeypatched to 0), the extension check,
+the existing-name check, `documents.open` returning `None` → `READ_ONLY_NOT_APPLIED`, and
+`UNSUPPORTED` when `uploadFile` is missing.
+
+`import` negatives: `.f3z` path, `format` `f3z` and `format` `f3d` with `.f3z` → `INVALID_PARAMS`
+whose message contains `use document.datafile_upload then document.open` and no `ImportManager`
+call recorded; an `.f3d` path still imports.
+
 ### 10.2 Live
 `LIVE_SCENARIOS` in `document.py`: list of core design § 10 tuples `(name, "tool.action",
 async fn(session))`, calling actions with `live_check.call`, run by
 `python scripts/live_check.py --only document[.<action>]`. Scenario names equal the action they
 prove and are tagged `"document.<name>"`, except `export_usdz` (tagged `"document.export"`) and
 `roundtrip` (tagged `"document.import"`), `bulk` (`"document.open"`), `save_locks`
-(`"document.save"`), `auto_unlock` (`"sketch.create"`) and `folder_limit` (`"document.save_as"`). Cloud files are saved in the active project's root folder
+(`"document.save"`), `auto_unlock` (`"sketch.create"`), `folder_limit` (`"document.save_as"`) and
+`datafile_upload_f3z` (`"document.datafile_upload"`). Cloud files are saved in the active project's root folder
 (`list_projects` item with `active: true`; path = its name) under `defusion-live-<unix time>-<n>`
 and each scenario deletes what it saved and closes what it opened in a `finally`. Local files go to
 `tempfile.mkdtemp()`. Scenarios needing a B-Rep body call `live_check.box(session, 10, 10, 10)`
@@ -604,10 +710,38 @@ with the file read-only through `save`. Scenarios that edit a saved document rel
 | `datafile_delete` | without confirm → `CONFIRM_REQUIRED`; with → `datafile_get` by id `NOT_FOUND`. |
 | `export` | `box`; export stl, 3mf, obj, step, iges, sat (each may be `UNSUPPORTED` when the licence refuses it), smt, f3d → each file exists, size > 0; stl with `body` and `one_file_per_body` ok; relative path → `INVALID_PARAMS`. |
 | `export_usdz` | export usdz → file exists, or `UNSUPPORTED` (both PASS; the line states which). |
-| `import` | step from `export` → `new_document` with design; close it; same step `active` → `created` non-empty; generated DXF (one LINE entity, written by the scenario) `active` → one sketch created; dxf `new_document` → `INVALID_PARAMS`. |
+| `datafile_upload` | `box`; `export` f3d to a temp file named `defusion-live-<ts>-<n>.f3d`; `datafile_upload {"paths": [<file>]}` → `results[0]` has `id`, `name`, `path` `<project>/<name>`, `version_number` ≥ 1, `read_only` true; `datafile_get` by path → `read_only` true; `open` the file → `already_open` false, a design; `close` (confirm); the same upload again → `INVALID_PARAMS`; a missing path → `NOT_FOUND`; a `.step` path and a relative path → `INVALID_PARAMS`; `datafile_delete` (confirm) → `datafile_get` `NOT_FOUND`. |
+| `datafile_upload_f3z` (tag `document.datafile_upload`) | env `DEFUSION_LIVE_F3Z` unset → still reported as `PASS` with reason `DEFUSION_LIVE_F3Z unset`, but the TASK-DOC-016 live run must set it to an operator-supplied multi-document `.f3z` and counts a reported skip as a failure of the task. Else copy that multi-document `.f3z` to `defusion-live-<ts>-<n>.f3z` in a temp dir; `import` of the copy → `INVALID_PARAMS` (REQ-DOC-017); upload it with `read_only` true → entry fields as above, the root name is `p.stem` or one of `created`, and `datafile_get` `read_only` true for every created file; `open` the root; `list_references {"nested": true}` and the document's `list_open` summary are printed (§ 10.3); `close` (confirm); `datafile_delete` (confirm) only created files whose names the scenario printed and checked against the source f3z. Also a `script.execute_python` probe tries `importManager.importToNewDocument(createFusionArchiveImportOptions(<copy>))` on the local f3z (`Documents.open` takes a `DataFile` only, so this is the only local-f3z open route) and prints `local f3z import: ok` or `refused: <message>`; a refusal is not a failure. |
+| `import` | step from `export` → `new_document` with design; close it; same step `active` → `created` non-empty; generated DXF (one LINE entity, written by the scenario) `active` → one sketch created; dxf `new_document` → `INVALID_PARAMS`; an empty temp file named `x.f3z` → `INVALID_PARAMS` with the `datafile_upload` message. |
 | `import_mesh` | write an ASCII STL 10 mm cube at 0..10 to temp; `import_mesh` `unit` `mm` in the parametric scratch design and in a new direct design → `bbox` min `[0,0,0]`, max `[10,10,10]` ± 0.01; also export the cube to 3mf and obj and import each (or `UNSUPPORTED` for a format the build lacks). |
 | `roundtrip` | f3d export of the box, `import` f3d `new_document`, close it. |
 | `bulk` (tag `document.open`) | two `_saved` files A and B; `close {"documents": [A, B], "confirm": true}` → `ok: 2`; `open {"files": [<A path>, <B path>, "<project>/no-such-<ts>"]}` → `ok: 2, failed: 1`, entry 3 `NOT_FOUND`, entries in input order; `open {"files": []}` and 51 entries → `INVALID_PARAMS`; `open {"file": <A path>}` → `INVALID_PARAMS`; `datafile_get` A and B → `read_only` true. |
 | `save_locks` (tag `document.save`) | `_saved`: `datafile_get` → `read_only` true right after `save_as`; `box` → envelope `made_editable` names the document, `datafile_get` `read_only` false; `save {"description": "v2"}` → entry `read_only` true and `datafile_get` `read_only` true; `box`, `save {"read_only": false}` → `datafile_get` `read_only` false. |
-| `auto_unlock` (tag `sketch.create`) | `_saved` (locked): `sketch.create {"plane": "XY", "preserve_read_only": true}` → `READ_ONLY`, `datafile_get` still `read_only` true; `sketch.create {"plane": "XY"}` → ok with `made_editable` naming the document; `datafile_get` `read_only` false. |
-| `folder_limit` (tag `document.save_as`) | session `open_session(folder=<project>)`: `create`, `save_as {"documents": [{"name": <unique>}]}` (no `folder`) → file path `<project>/<name>`, `read_only` true; clean it up as `_saved` does. Session `open_session(folder="<project>/defusion-live-none-<ts>")` with a `_saved` file F in the project root: `resolve_folder <project>` → `NOT_ALLOWED`; `datafile_get` F → `NOT_ALLOWED`; `open {"files": [F]}` → entry `NOT_ALLOWED`; `save_as` with `folder` `<project>` → `NOT_ALLOWED`; with F's document active, `sketch.create {"plane": "XY"}` → `NOT_ALLOWED`; `create` then `sketch.create {"plane": "XY"}` on the new unsaved document → ok; close it. |
+| `auto_unlock` (tag `sketch.create`) | `_saved` (locked): `sketch.create {"plane": "XY", "preserve_read_only": true}` → `READ_ONLY`, `datafile_get` still `read_only` true; `sketch.create {"plane": "XY"}` → ok with `made_editable` naming the document; `datafile_get` `read_only` false; `close` with `confirm` → `relocked` true, no `warnings`, `discarded_changes` true; `datafile_get` `read_only` true. Fails with the entry's `warnings` text when `relocked` is false. |
+| `folder_limit` (tag `document.save_as`) | session `open_session(folder=<project>)`: `create`, `save_as {"documents": [{"name": <unique>}]}` (no `folder`) → file path `<project>/<name>`, `read_only` true; clean it up as `_saved` does. Session `open_session(folder="<project>/defusion-live-none-<ts>")` with a `_saved` file F in the project root: `resolve_folder <project>` → `NOT_ALLOWED`; `datafile_get` F → `NOT_ALLOWED`; `open {"files": [F]}` → entry `NOT_ALLOWED`; `save_as` with `folder` `<project>` → `NOT_ALLOWED`; with F's document active, `sketch.create {"plane": "XY"}` → `NOT_ALLOWED`; a temp f3d `datafile_upload` with `folder` `<project>` → `NOT_ALLOWED`; `create` then `sketch.create {"plane": "XY"}` on the new unsaved document → ok; close it. |
+
+### 10.3 Live notes
+Facts the live scenarios settle; each run prints them and TASK-DOC-018 writes the observed value
+here after the first run on a Fusion build (the code's behaviour for every outcome is already
+specified, so none blocks implementation):
+| Fact | Settled by |
+|---|---|
+| Fusion names an uploaded file `p.stem` | `datafile_upload`: `results[0].name` vs the local name |
+| Make Read-Only works on a document that has unsaved changes | `auto_unlock`: `close` `relocked` |
+| A transiently opened uploaded file can be locked and closed (`datafile_upload` `read_only` true) | `datafile_upload` |
+| A multi-document f3z creates several cloud files | `datafile_upload_f3z`: `created` |
+| External references survive an f3z upload | `datafile_upload_f3z`: nested `list_references` total and `out_of_date` |
+| Fusion accepts a local f3z through `createFusionArchiveImportOptions` | `datafile_upload_f3z` probe |
+
+Recorded values (first live run on this Fusion build, 2026-11-12; f3z source `Assembly v2.f3z`, 5 design files):
+- Fusion names an uploaded `.f3d` file `p.stem`: yes (`results[0].name` equals the local name).
+- Make Read-Only works on a document with unsaved changes: yes (`auto_unlock`: `close` gives `relocked` true).
+- A transiently opened uploaded file can be locked and closed: yes (`datafile_upload` `read_only` true, `datafile_get` `read_only` true).
+- A multi-document f3z creates several cloud files: yes, 5 (`Head`, `Arm`, `Body`, `Leg`, `Assembly`); none is named `p.stem`, so
+  `uploadFile` returned `Head` (a child) and the entry reports it as the root; `created` lists all 5. Right after
+  `UploadFinished` a created file can list with a local path as its id; the code waits up to `UPLOAD_SETTLE` (30 s) for `urn:` ids
+  before locking. Every created file locks and reads `read_only` true. A file with a parent reference deletes only after its
+  parent (delete `Assembly` first).
+- External references survive an f3z upload: yes as separate files (`Assembly` references `Head`, `Body`, `Arm`, `Leg`); nested
+  `list_references` of the returned file `Head` has total 0 (it is a leaf).
+- Fusion accepts a local f3z through `createFusionArchiveImportOptions`: no (`refused: 2 : InternalValidationError : bRet`).

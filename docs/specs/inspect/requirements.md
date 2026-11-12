@@ -20,7 +20,9 @@ framework. Section references (§) without a prefix point to `docs/specs/inspect
   `bounds`, `measure_*`, `physical_properties`, `interference` and `compare_meshes`.
 - **DEP-INS-003**: Live scenarios build geometry with `sketch.create`, `sketch.rectangle`,
   `model.extrude`, `document.export` and `document.import_mesh` (`docs/specs/sketch/`,
-  `docs/specs/model/`, `docs/specs/document/`).
+  `docs/specs/model/`, `docs/specs/document/`); REQ-INS-017's live scenario also uses `sketch.line`,
+  `model.revolve`, `model.construction_plane` and the core `Axis` Ref form
+  `{"sketch": <Ref>, "line": n}` (REQ-CORE-057).
 
 ## Functional Requirements
 - **REQ-INS-001**: The inspect tool shall provide `summary` (read): active document name, saved
@@ -107,3 +109,20 @@ framework. Section references (§) without a prefix point to `docs/specs/inspect
   `python scripts/live_check.py --only inspect` (§ 3).
   - _Acceptance_: `python scripts/live_check.py --only inspect` prints one `PASS` line per
     scenario and exits 0 against the running add-in.
+- **REQ-INS-017**: `object_info` on an `ExtrudeFeature` or `RevolveFeature` shall add to
+  `properties` the complete `profiles`: one entry per input profile `{"sketch": <name>, "index": <int|null>}`,
+  and `profile_curves`: the curve records of all profiles (each tagged with its profile position and loop index, in sketch
+  coordinates and output length units; line, arc, circle, and `points`-approximated ellipse/spline forms with spline/ellipse
+  sampled at a fixed 16 points; § 2.2) returned through the core paging helper (core § 5.5, `ctx.page`:
+  `{items, total, offset, next_offset}`, `limit`/`offset` per core, `object_info` default `limit` 25) building only the requested page's curve records, so every curve is reachable by paging and none is dropped, and, for a
+  `RevolveFeature` only, `axis` `{"kind", "name", "ref", "origin", "direction"}` in model space for
+  a sketch line, edge, construction axis or origin axis; it shall also export `profile_index` for the history set (§ 2.2); the paged curves are how a
+  client reads a profile that history leaves `unknown`. A failing read yields `None` for
+  `profiles`/`axis` only (§ 2.2).
+  - _Acceptance_: Unit tests: an extrude over a 20 x 10 mm rectangle profile returns one `profiles`
+    entry with `index` 0 and 4 `line` curves in loop 0 with the rectangle's corners; with
+    `units {"length": "in"}` the coordinates scale by 1 / 2.54; a revolve about a `SketchLine`
+    returns `axis.kind` `"sketch_line"`, `ref` `{"sketch": {"name"}, "line": n}`, and `origin` and
+    `direction` from `sketchToModelSpace`; an unmatched fake profile returns `index` null; a
+    raising `profileLoops` returns `profile_curves` null (`profiles` stays); raising `areaProperties` returns `profiles` null; a fake spline returns 16 points; a fake with 250 curves at the default `limit` returns 25 with `next_offset` 25; a fake with 100 spline curves at the default `limit` stays under 64 KiB; a fake with 250 curves across profiles paged with `limit` 100 returns 100, 100 and 50 curves with `next_offset` 100, 200 and null and no curve missing, each page building only its slice's records (build count equals page size); a page over 64 KiB returns core's `RESULT_TOO_LARGE` with the smaller-limit hint. Live `object_info`: a revolve about a sketch
+    line on an offset-plane sketch returns the axis in model coordinates.

@@ -148,6 +148,94 @@ def _index_of(collection, entity, cache=None):
     return cache.get(entity.entityToken)
 
 
+# --- extrude and revolve inputs (§ 2.2.1) ---------------------------------------------------------
+
+_SAMPLED = {"Ellipse3DCurveType": "ellipse", "EllipticalArc3DCurveType": "elliptical_arc",
+            "NurbsCurve3DCurveType": "spline"}
+
+
+def profile_index(profile):
+    """Position in ``profile.parentSketch.profiles`` of the profile with the same area and centroid, else ``None``."""
+    ap = profile.areaProperties()
+    for i, q in enumerate(profile.parentSketch.profiles):
+        qp = q.areaProperties()
+        if (abs(qp.area - ap.area) <= 1e-9 and abs(qp.centroid.x - ap.centroid.x) <= 1e-7
+                and abs(qp.centroid.y - ap.centroid.y) <= 1e-7 and abs(qp.centroid.z - ap.centroid.z) <= 1e-7):
+            return i
+    return None
+
+
+def _profile_curve(ctx, pc):
+    g, t = pc.geometry, pc.geometryType
+    types = adsk.core.Curve3DTypes
+
+    def xy(p):
+        return [ctx.length_out(p.x), ctx.length_out(p.y)]
+
+    if t == types.Line3DCurveType:
+        return {"type": "line", "start": xy(g.startPoint), "end": xy(g.endPoint)}
+    if t == types.Arc3DCurveType:
+        return {"type": "arc", "center": xy(g.center), "radius": ctx.length_out(g.radius),
+                "start": xy(g.startPoint), "end": xy(g.endPoint), "ccw": g.normal.z > 0}
+    if t == types.Circle3DCurveType:
+        return {"type": "circle", "center": xy(g.center), "radius": ctx.length_out(g.radius)}
+    for name, label in _SAMPLED.items():
+        if t == getattr(types, name):
+            _, lo, hi = g.evaluator.getParameterExtents()
+            _, pts = g.evaluator.getPointsAtParameters([lo + (hi - lo) * i / 15 for i in range(16)])
+            return {"type": label, "points": [xy(p) for p in pts]}
+    _, a, b = g.evaluator.getEndPoints()
+    return {"type": "other", "points": [xy(a), xy(b)]}
+
+
+def profile_loops(ctx, profile):
+    """One list of curve records per ``profile.profileLoops`` item, in Fusion order."""
+    return [[_profile_curve(ctx, pc) for pc in loop.profileCurves] for loop in profile.profileLoops]
+
+
+def _profiles_of(feature):
+    p = feature.profile
+    return list(p) if hasattr(p, "count") else [p]
+
+
+def _profile_curves(ctx, feature, offset, limit):
+    profiles = _profiles_of(feature)
+    seq = [(pos, li, pc) for pos, p in enumerate(profiles)
+           for li, loop in enumerate(p.profileLoops) for pc in loop.profileCurves]
+    return ctx.page(seq, offset, limit,
+                    build=lambda i: {"profile": i[0], "loop": i[1], **_profile_curve(ctx, i[2])})
+
+
+def _axis(ctx, feature):
+    a = feature.axis
+    kind = _short(a)
+    comp = feature.parentComponent
+    if kind == "ConstructionAxis":
+        g = a.geometry
+        origin, direction = _pt(ctx, g.origin), _vec(g.direction)
+        for name, std in (("X", comp.xConstructionAxis), ("Y", comp.yConstructionAxis),
+                          ("Z", comp.zConstructionAxis)):
+            if a.entityToken == std.entityToken:
+                return {"kind": "origin", "name": name, "ref": None, "origin": origin, "direction": direction}
+        return {"kind": "construction_axis", "name": a.name, "ref": ctx.ref(a),
+                "origin": origin, "direction": direction}
+    if kind == "BRepEdge":
+        g = a.geometry
+        return {"kind": "edge", "name": None, "ref": ctx.ref(a), "origin": _pt(ctx, g.startPoint),
+                "direction": _diff(g.startPoint, g.endPoint)}
+    if kind == "SketchLine":
+        s, g = a.parentSketch, a.geometry
+        p0, p1 = s.sketchToModelSpace(g.startPoint), s.sketchToModelSpace(g.endPoint)
+        n = _index_of(s.sketchCurves.sketchLines, a)
+        return {"kind": "sketch_line", "name": None, "ref": {"sketch": {"name": s.name}, "line": n},
+                "origin": _pt(ctx, p0), "direction": _diff(p0, p1)}
+    return None
+
+
+def _diff(p0, p1):
+    return _vec(adsk.core.Vector3D.create(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z))
+
+
 # --- summary and object_info (§ 2.1, § 2.2) ------------------------------------------------------
 
 
@@ -225,7 +313,7 @@ def _parent_of_component(ctx, c):
     return root
 
 
-def _info(ctx, obj, kind):
+def _info(ctx, obj, kind, offset=0, limit=25):
     """``(properties, parent)`` for one entity; each read that fails gives ``None``."""
     design = ctx.design
     root = design.rootComponent
@@ -301,6 +389,12 @@ def _info(ctx, obj, kind):
             "is_suppressed": lambda: obj.isSuppressed,
             "timeline_index": lambda: obj.timelineObject.index,
         }
+        if kind in ("ExtrudeFeature", "RevolveFeature"):
+            props["profiles"] = lambda: [
+                {"sketch": p.parentSketch.name, "index": profile_index(p)} for p in _profiles_of(obj)]
+            props["profile_curves"] = lambda: _profile_curves(ctx, obj, offset, limit)
+            if kind == "RevolveFeature":
+                props["axis"] = lambda: _axis(ctx, obj)
         parent = parent_comp
     elif isinstance(obj, adsk.fusion.Parameter):
         props = {
@@ -329,11 +423,14 @@ def _info(ctx, obj, kind):
 
 
 @action("inspect", access="read")
-def object_info(ctx: Ctx, entity: Entity) -> dict:
-    """Type, properties, bounding box and parent of any entity."""
+def object_info(ctx: Ctx, entity: Entity, offset: int = 0, limit: int = 25) -> dict:
+    """Type, properties, bounding box and parent of any entity. Extrude and revolve features add
+    `profiles`, paged `profile_curves` (`offset`/`limit`) and, for revolve, `axis`."""
     ctx.require_design()
     kind = _short(entity)
-    props, parent = _info(ctx, entity, kind)
+    if kind in ("ExtrudeFeature", "RevolveFeature"):
+        ctx.page((), offset, limit)  # reject bad offset/limit; the per-key guard would swallow it
+    props, parent = _info(ctx, entity, kind, offset, limit)
     bb = _try(lambda: entity.boundingBox)
     return {
         "ref": ctx.ref(entity),
@@ -985,6 +1082,64 @@ async def _object_info(session):
         face = (await _i(session, "list_faces", {"body": body}))["items"][0]["ref"]
         assert (await _i(session, "object_info", {"entity": body}))["type"] == "BRepBody"
         assert (await _i(session, "object_info", {"entity": face}))["type"] == "BRepFace"
+    await _object_info_inputs(session)
+
+
+def _loop_corners(rows):
+    return sorted((round(r["start"][0], 6), round(r["start"][1], 6)) for r in rows)
+
+
+async def _object_info_inputs(session):
+    """Extrude and revolve inputs (design § 2.2.1, REQ-INS-017)."""
+    async def info(feature, **kw):
+        return (await _i(session, "object_info", dict(entity=feature["feature"], **kw)))["properties"]
+
+    async def sk(plane="XY"):
+        return (await _do(session, "sketch", "create", {"plane": plane}))["sketch"]
+
+    async def rect(s, p1, p2):
+        await _do(session, "sketch", "rectangle", {"sketch": s, "mode": "two_point", "p1": p1, "p2": p2})
+
+    async with _fresh(session):
+        s = await sk()
+        await rect(s, [0, 0], [20, 10])
+        props = await info(await _do(session, "model", "extrude", {"profile": {"sketch": s, "index": 0}, "distance": 5}))
+        assert props["profiles"] == [{"sketch": s["name"], "index": 0}], props["profiles"]
+        rows = props["profile_curves"]["items"]
+        assert len(rows) == 4 and {r["type"] for r in rows} == {"line"} and {r["loop"] for r in rows} == {0}, rows
+        assert _loop_corners(rows) == [(0, 0), (0, 10), (20, 0), (20, 10)], rows
+    async with _fresh(session):
+        s = await sk()
+        await _do(session, "sketch", "circle", {"sketch": s, "mode": "center_radius", "center": [0, 0], "radius": 7})
+        rows = (await info(await _do(session, "model", "extrude", {"profile": {"sketch": s, "index": 0}, "distance": 5})))[
+            "profile_curves"]["items"]
+        assert len(rows) == 1 and rows[0]["type"] == "circle" and _near(rows[0]["radius"], 7, 1e-6), rows
+    for plane, z in (("XY", 0), (None, 5)):
+        async with _fresh(session):
+            if plane is None:
+                plane = (await _do(session, "model", "construction_plane",
+                                   {"method": "offset", "plane": "XY", "offset": 5}))["plane"]
+            s = await sk(plane)
+            await _do(session, "sketch", "line", {"sketch": s, "points": [[0, 0], [0, 20]]})
+            await rect(s, [10, 0], [20, 20])
+            props = await info(await _do(session, "model", "revolve", {
+                "profile": {"sketch": s, "index": 0}, "axis": {"sketch": s, "line": 0}}))
+            ax = props["axis"]
+            assert ax["kind"] == "sketch_line" and ax["ref"]["line"] == 0, ax
+            assert all(_near(a, b, 1e-6) for a, b in zip(ax["direction"], [0, 1, 0])), ax
+            assert all(_near(a, b, 1e-6) for a, b in zip(ax["origin"], [0, 0, z])), ax
+    async with _fresh(session):
+        s = await sk()
+        await rect(s, [10, 0], [20, 20])
+        ax = (await info(await _do(session, "model", "revolve", {
+            "profile": {"sketch": s, "index": 0}, "axis": "Y"})))["axis"]
+        assert ax["kind"] == "origin" and ax["name"] == "Y", ax
+    async with _fresh(session):
+        s = await sk()
+        await _do(session, "sketch", "ellipse", {"sketch": s, "center": [0, 0], "major_point": [10, 0], "point": [0, 5]})
+        pts = (await info(await _do(session, "model", "extrude", {"profile": {"sketch": s, "index": 0}, "distance": 5}))
+               )["profile_curves"]["items"][0]
+        assert pts["type"] == "ellipse" and all(_near(a, b, 1e-9) for a, b in zip(pts["points"][0], pts["points"][-1])), pts
 
 
 async def _list_bodies(session):

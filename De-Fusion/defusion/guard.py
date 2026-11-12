@@ -7,6 +7,13 @@ VERIFY_TRIES = 10
 VERIFY_DELAY = 1.0  # seconds between tries; unit tests set it to 0
 _EVENTS_EVERY = 0.05
 
+UNLOCKED = {}  # data file id -> doc.name, for documents ensure_editable made editable (design § 5.13)
+
+
+def forget(file_id):
+    """Drop ``file_id`` from ``UNLOCKED``; an id that is not a key is ignored."""
+    UNLOCKED.pop(file_id, None)
+
 
 def saved_file(doc):
     """``doc.dataFile`` when it is a finished cloud file; ``None`` when never saved, unreadable or
@@ -99,6 +106,13 @@ def wait_read_only(lookup, want):
 
 def set_read_only(ctx, doc, want, lookup):
     """Run Fusion's Make Read-Only (``want``) or Make Editable on ``doc`` and verify via ``lookup``."""
+    last = []
+
+    def seen():
+        df = lookup()
+        last[:] = [df]
+        return df
+
     prev = ctx.app.activeDocument
     switch = prev is not doc
     if switch and not doc.activate():
@@ -114,16 +128,20 @@ def set_read_only(ctx, doc, want, lookup):
     finally:
         if switch and prev is not None and not prev.activate() and not failed:
             raise ActionError(FUSION_ERROR, "could not re-activate %s" % prev.name)
-    return wait_read_only(lookup, want)
+    observed = wait_read_only(seen, want)
+    if observed and want and last and last[0] is not None:
+        forget(last[0].id)
+    return observed
 
 
 def fresh_file(ctx, df):
-    """The current ``DataFile`` for ``df``; ``df`` itself when the lookup finds nothing or raises
-    (not yet listed right after a save)."""
+    """``(file, fresh)``: ``(findFileById(df.id), True)``, else ``(df, False)`` when the lookup
+    finds nothing or raises (not yet listed right after a save)."""
     try:
-        return ctx.app.data.findFileById(df.id) or df
+        found = ctx.app.data.findFileById(df.id)
     except Exception:
-        return df
+        return df, False
+    return (found, True) if found else (df, False)
 
 
 def ensure_editable(ctx, doc):
@@ -134,7 +152,7 @@ def ensure_editable(ctx, doc):
     if df is None:  # upload pending
         check_folder(ctx, None)
         return
-    fresh = fresh_file(ctx, df)
+    fresh, _ = fresh_file(ctx, df)
     check_folder(ctx, folder_path(fresh.parentFolder))
     if not fresh.isReadOnly:
         return
@@ -145,6 +163,7 @@ def ensure_editable(ctx, doc):
             hints=["omit preserve_read_only to make it editable first, or call document.set_read_only "
                    "with read_only false"],
         )
+    UNLOCKED[df.id] = doc.name  # recorded before set_read_only so a Make Editable never observed is still listed
     if not set_read_only(ctx, doc, False, lambda: ctx.app.data.findFileById(df.id)):
         raise ActionError(
             READ_ONLY_NOT_APPLIED,

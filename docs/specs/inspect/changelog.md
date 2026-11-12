@@ -8,3 +8,5 @@
 | 0.1.3 | 2026-11-10 | spec-consistency s1 r2 and s2 r1 fixes (C1 r2, C4 findings) |
 | 0.1.4 | 2026-11-11 | `compare_meshes` live scenario uses the document list forms `paths=[...]` and `results[0]` (document 0.4.0 § 2.7) |
 | 0.1.5 | 2026-11-11 | Live scenario `compare_meshes` reads `results[0]` only when `ok` and `results[0].ok` are true |
+| 0.2.0 | 2026-11-12 | `object_info` on extrude/revolve adds `profiles` (loop curves) and revolve `axis`; importable `profile_index` for history (REQ-INS-017, TASK-INS-009..010); DEP-INS-003 amended; `object_info` on Extrude/Revolve returns complete profile curves paged via core `ctx.page` (no truncation), spline/ellipse sampled at a fixed 16 points |
+| 0.2.1 | 2026-11-12 | REQ-INS-017 acceptance: raising profileLoops nulls profile_curves, raising areaProperties nulls profiles (V2-r1-4) |

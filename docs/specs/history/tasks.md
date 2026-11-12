@@ -80,6 +80,17 @@
   - _Output_: `De-Fusion/defusion/tools/history.py`, `tests/test_history.py`
   - _Verify_: `pytest -q tests/test_history.py -k apply`
 
+- [x] **TASK-HIS-013** [REQ-HIS-023, REQ-HIS-024]: Sketch-line axis and profile recovery
+  - § 7.7: `SketchLine` case in `_axis_form`; `_profile_ref(profile)` on `inspect.profile_index`
+    (remove `_profile_index`; unmatched → `_unnamed`); `_read_extrude`/`_read_revolve` call it.
+    Tests: axis found / occurrence context /
+    not found; profile one sketch (int, list), two sketches, unmatched → `unknown`; every emitted
+    step validates against the registered `model.extrude`/`model.revolve` models.
+  - Waits on TASK-CORE-032 and TASK-INS-009.
+  - _Reuse_: `_axis_form`, `_unnamed`, `_name_ref`, `_guarded` in `history.py`; `inspect.profile_index` (TASK-INS-009)
+  - _Output_: `De-Fusion/defusion/tools/history.py`, `tests/test_history.py`
+  - _Verify_: `pytest -q tests/test_history.py -k "dump and (axis or profile)"`
+
 ## Phase 2 — Live verification
 - [x] **TASK-HIS-011** [REQ-HIS-001, REQ-HIS-002, REQ-HIS-003, REQ-HIS-004, REQ-HIS-005, REQ-HIS-006, REQ-HIS-007, REQ-HIS-008, REQ-HIS-009, REQ-HIS-010, REQ-HIS-011, REQ-HIS-012, REQ-HIS-013, REQ-HIS-014, REQ-HIS-017, REQ-HIS-021, REQ-HIS-022]: Live timeline, snapshot, undo and coil-probe scenarios
   - Add the § 9.2 `LIVE_SCENARIOS` entries tagged `history.list` through `history.undo`, plus
@@ -104,3 +115,10 @@
     `python scripts/live_check.py --profile full --only history.apply_recipe_step`,
     `python scripts/live_check.py --profile full --only history` (all PASS, exit 0) and
     `pytest -q tests/test_history.py`
+- [x] **TASK-HIS-014** [REQ-HIS-023, REQ-HIS-024, REQ-HIS-022]: Live axis-line and multi-sketch profile round trips
+  - Add the `recipe_axis_line` and `recipe_profiles` scenarios (§ 9.2, tag `history.dump_recipe`);
+    fix mapping or replay defects until body count, volume and bbox match.
+  - Waits on TASK-HIS-013, TASK-INS-009 and TASK-CORE-032.
+  - _Reuse_: `recipe_part` comparison helper; `sketch.line`, `sketch.rectangle`, `model.revolve`, `script.execute_python`, `inspect.object_info`; live harness (TASK-CORE-021)
+  - _Output_: `De-Fusion/defusion/tools/history.py`
+  - _Verify_: `python scripts/live_check.py --profile full --only history.dump_recipe` (all PASS, exit 0) and `pytest -q tests/test_history.py`

@@ -19,6 +19,7 @@ from ..errors import (
     ActionError,
 )
 from .. import types
+from . import inspect
 from ..types import TimelineItem
 
 ItemArg = int | TimelineItem
@@ -592,31 +593,30 @@ def _axis_form(axis):
         return _edge_ref(axis)
     if isinstance(axis, adsk.fusion.ConstructionAxis):
         return _origin_axis_name(axis) or {"name": axis.name}
+    if isinstance(axis, adsk.fusion.SketchLine):
+        sketch = axis.parentSketch
+        if getattr(sketch, "assemblyContext", None) is not None:
+            raise _unnamed(axis)
+        for n, line in enumerate(sketch.sketchCurves.sketchLines):
+            if line.entityToken == axis.entityToken:
+                return {"sketch": {"name": sketch.name}, "line": n}
     raise _unnamed(axis)
 
 
-def _profile_index(profile):
-    sketch = profile.parentSketch
-    props = profile.areaProperties()
-    area, c = props.area, props.centroid
-    for i, q in enumerate(sketch.profiles):
-        qp = q.areaProperties()
-        qc = qp.centroid
-        if (abs(qp.area - area) <= 1e-9 and abs(qc.x - c.x) <= 1e-7 and abs(qc.y - c.y) <= 1e-7
-                and abs(qc.z - c.z) <= 1e-7):
-            return sketch, i
-    raise _unnamed(profile)
-
-
 def _profile_ref(profile):
-    """``{"sketch": {"name"}, "index": i}``; a collection of profiles gives an index list."""
-    if isinstance(profile, adsk.fusion.Profile):
-        sketch, i = _profile_index(profile)
-        return {"sketch": _name_ref(sketch), "index": i}
-    found = [_profile_index(p) for p in profile]
-    _require(found, "feature has no profile")
-    _require(len({s.entityToken for s, _ in found}) == 1, "profiles come from several sketches")
-    return {"sketch": _name_ref(found[0][0]), "index": [i for _, i in found]}
+    """Profile ref(s): one sketch gives a dict (``index`` int or list), several sketches a list of dicts."""
+    items = [profile] if isinstance(profile, adsk.fusion.Profile) else list(profile)
+    _require(items, "feature has no profile")
+    entries = {}
+    for p in items:
+        sketch = p.parentSketch
+        i = inspect.profile_index(p) if getattr(sketch, "assemblyContext", None) is None else None
+        if i is None:
+            raise _unnamed(p)
+        entries.setdefault(sketch.entityToken, (sketch, []))[1].append(i)
+    out = [{"sketch": {"name": s.name}, "index": idx[0] if len(idx) == 1 else idx}
+           for s, idx in entries.values()]
+    return out[0] if len(out) == 1 else out
 
 
 def _point_fixed(ctx, point):
@@ -1363,6 +1363,50 @@ async def _apply_recipe_step(session):
             await _lc().call(session, "document", "close", {"documents": [doc], "confirm": True})
 
 
+async def _recipe_axis_line(session):
+    async def build(session):
+        sk = (await _do(session, "sketch", "create", {"plane": "XY"}))["sketch"]
+        await _do(session, "sketch", "line", {"sketch": sk, "points": [[0, 0], [0, 20]]})
+        await _do(session, "sketch", "rectangle", {"sketch": sk, "mode": "two_point", "p1": [10, 0], "p2": [20, 20]})
+        await _do(session, "model", "revolve", {"profile": {"sketch": sk, "index": 0}, "axis": {"sketch": sk, "line": 0}})
+
+    steps = await _round_trip(session, build)
+    rev = [s for s in steps if s.get("action") == "revolve"]
+    assert rev and rev[0]["params"]["axis"].get("line") == 0, steps
+    assert not [s for s in steps if s.get("kind") == "unknown"], steps
+
+
+_TWO_SKETCH_EXTRUDE = (
+    "import adsk.fusion\n"
+    "root = adsk.core.Application.get().activeProduct.rootComponent\n"
+    "profs = adsk.core.ObjectCollection.create()\n"
+    "for x in (0, 30):\n"
+    "    sk = root.sketches.add(root.xYConstructionPlane)\n"
+    "    sk.sketchCurves.sketchLines.addTwoPointRectangle(adsk.core.Point3D.create(x, 0, 0), adsk.core.Point3D.create(x + 0.5, 0.5, 0))\n"
+    "    profs.add(sk.profiles.item(0))\n"
+    "inp = root.features.extrudeFeatures.createInput(profs, adsk.fusion.FeatureOperations.NewBodyFeatureOperation)\n"
+    "inp.setDistanceExtent(False, adsk.core.ValueInput.createByReal(1))\n"
+    "root.features.extrudeFeatures.add(inp)\n"
+    "None"
+)
+
+
+async def _recipe_profiles(session):
+    async def build(session):
+        await _do(session, "script", "execute_python", {"code": _TWO_SKETCH_EXTRUDE, "confirm": True})
+
+    steps = await _round_trip(session, build)
+    ext = [s for s in steps if s.get("action") == "extrude"]
+    assert ext and isinstance(ext[0]["params"]["profile"], list) and len(ext[0]["params"]["profile"]) == 2, steps
+    assert not [s for s in steps if s.get("kind") == "unknown"], steps
+    async with _fresh(session):
+        await build(session)
+        feat = [i for i in (await _h(session, "list"))["items"] if i["name"].startswith("Extrude")][-1]
+        info = await _do(session, "inspect", "object_info", {"entity": feat["name"]})
+        props = info["properties"]
+        assert len(props["profiles"]) == 2 and props["profile_curves"]["items"], info
+
+
 def _coil_scenario(coil_type, **kw):
     async def build(session):
         await _do(session, "model", "coil", dict(_COIL, coil_type=coil_type, **kw))
@@ -1394,4 +1438,6 @@ LIVE_SCENARIOS = [(f.__name__[1:], "history." + f.__name__[1:], f) for f in (
      _coil_scenario("height_pitch", revolutions=None, pitch="5 mm")),
     ("recipe_coil_spiral", "history.dump_recipe", _coil_scenario("spiral", height=None, pitch="5 mm")),
     ("coil_probe", "history.dump_recipe", _coil_probe),
+    ("recipe_axis_line", "history.dump_recipe", _recipe_axis_line),
+    ("recipe_profiles", "history.dump_recipe", _recipe_profiles),
 ]

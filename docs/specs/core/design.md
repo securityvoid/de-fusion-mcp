@@ -234,8 +234,8 @@ for validation and schema; resolution produces the Fusion object.
 | `Entity` | Ref (below) | any entity, including `MeshBody`; no class check (the action checks). Name search covers bodies, mesh bodies, features, sketches, construction planes/axes/points, components, occurrences, joints, joint origins and parameters |
 | `CamSetup`, `CamOperation` | bare name string, `{"name": s}`, `{"name": s, "setup": <setup name>}` (operation only), or `{"token": t}`; the output refs `{"type": "Setup", "name"}` and `{"type": "Operation", "name", "setup"}` are accepted unchanged | the `adsk.cam.Setup` / `adsk.cam.Operation` of the active document's CAM product (`document.products.itemByProductType("CAMProductType")`). Name: exact match over `cam.setups` / `cam.allOperations` (scoped to the named setup's `allOperations` when `setup` is given); token: `entityToken` equality over the same items. No CAM product or no match → `NOT_FOUND`; several → `AMBIGUOUS`. Named with the `Cam` prefix because `Operation` is the feature-operation enum |
 | `Plane` | `"XY"`, `"XZ"`, `"YZ"` (origin planes), or a Ref to a construction plane or planar face | planar entity |
-| `Axis` | `"X"`, `"Y"`, `"Z"` (origin axes), or a Ref to a construction axis, linear edge or sketch line | linear entity |
-| `Profile` | `{"sketch": Ref, "index": int}` or `{"sketch": Ref, "index": [int,...]}`; `index` may be omitted only when the sketch has exactly one profile | `Profile` or `ObjectCollection` |
+| `Axis` | `"X"`, `"Y"`, `"Z"` (origin axes), a Ref to a construction axis, linear edge or sketch line, or `{"sketch": Ref, "line": n}` (`n` = index in `sketch.sketchCurves.sketchLines`; out of range → `INVALID_PARAMS` "line <n> is out of range; sketch '<name>' has <count> lines (0-<count-1>)"; REQ-CORE-057) | linear entity |
+| `Profile` | `{"sketch": Ref, "index": int}`, `{"sketch": Ref, "index": [int,...]}` (`index` may be omitted only when the sketch has exactly one profile), or a non-empty list of such entries for profiles from several sketches, resolved in order into one `ObjectCollection` (REQ-CORE-058); an index out of range → `INVALID_PARAMS` "profile <i> is out of range; sketch '<name>' has <count> profiles", hint "use an index in 0-<count-1>", prefixed "entry <k>: " (list position) for list entries | `Profile` or `ObjectCollection` |
 | `Ref[...]` lists | `list` of the above | Python list |
 
 Origin names of `Plane`/`Axis` resolve against the action's `component` parameter when the action
@@ -436,8 +436,8 @@ Constants `VERIFY_TRIES = 10` and `VERIFY_DELAY = 1.0` seconds (unit tests set t
   1. `doc is None` or `never_saved(doc)` → return (never-saved documents are
      always editable and never folder-limited). `df = saved_file(doc)`; `None` (upload pending) →
      `check_folder(ctx, None)` (`NOT_ALLOWED` under a folder limit), then return.
-  2. `fresh = fresh_file(ctx, df)` (`ctx.app.data.findFileById(df.id) or df`; shared helper); a raising `findFileById` (file not yet
-     listed right after a save) also falls back to `df`.
+  2. `fresh, _ = fresh_file(ctx, df)` (`(findFileById(df.id), True)`, else `(df, False)`; shared helper, so callers can tell a fresh result from the `df` fallback); a raising `findFileById` (file not yet
+     listed right after a save) also returns `(df, False)`.
   3. `check_folder(ctx, folder_path(fresh.parentFolder))`.
   4. `fresh.isReadOnly` false → return.
   5. `ctx.preserve_read_only` → `READ_ONLY` ("<name> is read-only and preserve_read_only is
@@ -447,13 +447,25 @@ Constants `VERIFY_TRIES = 10` and `VERIFY_DELAY = 1.0` seconds (unit tests set t
      `READ_ONLY_NOT_APPLIED` ("<name> did not become editable within 10 tries, 1 s apart", hint
      "retry, or call document.set_read_only with read_only false and check datafile_get"); `True` → append
      `doc.name` to `ctx.made_editable`.
-  The document stays editable afterwards until `document.save`/`save_as` (document design § 6.4,
-  § 6.5) or `document.set_read_only` locks it again. Each guarded call on a saved document costs one
+  Issuing Make Editable also adds the document to the registry `UNLOCKED` (below), observed or not. The document stays editable
+  afterwards until `document.save`/`save_as` (document design § 6.4, § 6.5), `document.set_read_only`
+  (§ 6.8) or `document.close` (§ 7.1) locks it again. Each guarded call on a saved document costs one
   `findFileById`.
+- `UNLOCKED: dict[str, str]`: process-lifetime registry of the documents `ensure_editable` made
+  editable, `{data file id (urn): doc.name}`. `ensure_editable` step 6 adds `df.id` when Make Editable
+  is issued, whether or not the unlock is observed. `set_read_only` removes the id of the `DataFile` its last `lookup()` returned when
+  `want` is true and the state was observed (an id that is not a key is ignored), so the lock steps
+  of `save`/`save_as`, `document.set_read_only` and the re-lock of `document.close` drop the entry.
+  `forget(id)` removes an id (absent ignored); `document.close` calls it when it closes the document, whatever the
+  re-lock outcome, with a warning naming the document and pointing to `document.set_read_only`
+  when it is not locked. Nothing else adds or removes entries. The registry lives until the add-in restarts. `document.close` reads it to re-lock what
+  the guard unlocked (document design § 7.1): an editable saved document that is discarded would
+  otherwise stay editable and fill the account's editable-document cap (Fusion: "maximum number of
+  active documents has been reached" on `ActiveDocumentActivateCommand`).
 
 **Folder-limit scope.** With a limit set (§ 6.4): (a) every cloud folder or file a document action
 addresses through a `folder`/`file` parameter or entry, (b) the target of `document.save`,
-`document.save_as` and `document.set_read_only`, and (c) every edit of a saved open document through `ensure_editable` (the
+`document.save_as`, `document.set_read_only`, the folder of `document.datafile_upload` and the re-lock of `document.close`, and (c) every edit of a saved open document through `ensure_editable` (the
 pipeline for `"active"` actions, the action for `"action"` actions) must be inside the limit, else
 `NOT_ALLOWED`. Not limited: never-saved documents (creating, editing, exporting, closing them),
 `read` actions on open documents (document-tool list: document design § 2.8). Code run by `script.execute_python` or

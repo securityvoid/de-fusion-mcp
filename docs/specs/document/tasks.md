@@ -148,3 +148,58 @@ are to `docs/specs/document/design.md`.
   - _Reuse_: `scripts/live_check.py` (`call`, `box`, `open_session`), existing `_saved`, `_freeze`,
     `_uploaded`, `_gone` helpers.
   - _Verify_: `python scripts/live_check.py --only document.open && python scripts/live_check.py --only document.save && python scripts/live_check.py --only sketch.create && python scripts/live_check.py --only document.save_as && python scripts/live_check.py --only document && python scripts/live_check.py --only inspect.compare_meshes && python scripts/live_check.py --profile full --only history && pytest -q`
+
+## Phase 5 — Re-lock on close, datafile_upload, f3z routing
+- [x] **TASK-DOC-015** [REQ-DOC-028, REQ-DOC-019]: Re-lock on close
+  - Waits on TASK-CORE-031 (`guard.UNLOCKED`).
+  - `document.py`: `close` per § 7.1 (re-lock step before `doc.close(False)`, `relocked` and
+    `warnings` in the entry, timeout 120 in the § 3 table, `help` text mentions `relocked`).
+  - `tests/test_document.py`: every REQ-DOC-028 unit case (the `close` cases of § 10.1), incl.
+    `relocked` true only after a fresh lookup (a registered fake whose `findFileById` raises, or
+    returns `None` while its own data file reads read-only, gives `relocked` false with a warning
+    and the id dropped) and the entry dropped when `close` closes the document whatever the outcome
+    (`tests/test_guard.py` too); upload-pending close (local-path `dataFile.id`, registry held)
+    gives `relocked` false, a warning naming the document and `document.set_read_only`,
+    `close(False)` called, registry empty.
+  - `document.py` `LIVE_SCENARIOS`: extend `auto_unlock` (write → `made_editable`, `close` confirm →
+    `relocked` true, `datafile_get` `read_only` true) (§ 10.2).
+  - _Output_: `De-Fusion/defusion/tools/document.py`, `tests/test_document.py`,
+    `tests/test_guard.py`
+  - _Reuse_: `guard.saved_file`, `guard.check_folder`, `guard.set_read_only`,
+    `guard.UNLOCKED`, `guard.forget`, `guard.never_saved`, `guard.fresh_file` (core § 5.13); the TASK-CORE-027 read-only fakes.
+  - _Verify_: `pytest -q tests/test_document.py -k "close or relock" && python scripts/live_check.py --only sketch.create && pytest -q`
+- [x] **TASK-DOC-016** [REQ-DOC-029, REQ-DOC-023, REQ-DOC-025, REQ-DOC-027]: `datafile_upload`
+  - Waits on TASK-DOC-015 (shares the `close` and lock fakes).
+  - Fakes: `DataFolder.uploadFile`, `DataFileFuture`, `UploadStates` appended to `tests/fakes/adsk`.
+  - `document.py`: `datafile_upload` per § 6.13 (`UPLOAD_WAIT`, folder default, transient open and
+    lock), § 3 table row, § 2.7/§ 2.8 mentions, `help` text; `tests/test_document.py`: every
+    REQ-DOC-029 acceptance case (§ 6.13), the § 10.1 cases, the list-action 3-entry/0/51/singular cases covering 14
+    actions, the `help` check for 14 actions (`help` states the per-entry worst case); a 3-entry
+    call with a never-finishing future and small `UPLOAD_WAIT` returns a job; a raising
+    `guard.set_read_only` after upload gives `READ_ONLY_NOT_APPLIED` naming the file id and cloud
+    path (transient document closed, `prev` re-activated); the timeout hints name
+    `document.set_read_only`; `warnings` only when close/activate returns False or raises, texts "closing the temporary document failed" / "re-activating the original document failed"; a repeated stem is `INVALID_PARAMS` with one `uploadFile` call; the
+    existing-name and wrong-extension `INVALID_PARAMS` carry action hints.
+  - `LIVE_SCENARIOS`: `datafile_upload` and `datafile_upload_f3z` rows, and the `folder_limit`
+    addition (§ 10.2); `datafile_upload_f3z` reports `PASS` with a reason when `DEFUSION_LIVE_F3Z` is unset; run them; its cleanup deletes only created files whose names it printed and checked against the source f3z.
+  - The fake supports uploads that create several files.
+  - Live f3z: set `DEFUSION_LIVE_F3Z` to an operator-supplied multi-document `.f3z` (root plus at least one referenced component) and run `python scripts/live_check.py --only document.datafile_upload`; the task fails if the output reports the skip (`DEFUSION_LIVE_F3Z unset`).
+  - _Output_: `De-Fusion/defusion/tools/document.py`, `tests/test_document.py`,
+    `tests/fakes/adsk/core.py`
+  - _Reuse_: `_abs_path`, `_folder`, `_file_path`, `guard.set_read_only` (core § 5.13),
+    `live_check.box`, the `_uploaded`/`_gone` live helpers.
+  - _Verify_: `pytest -q tests/test_document.py -k "upload or help or bulk" && python scripts/live_check.py --only document.datafile_upload && python scripts/live_check.py --only document.save_as && pytest -q`
+- [x] **TASK-DOC-017** [REQ-DOC-017]: `import` rejects f3z
+  - `document.py`: `ImportFormat` gains `f3z`; § 9.1 table (`f3d` → `.f3d` only; `f3z` row);
+    § 6.11 step 1 message.
+  - `tests/test_document.py`: the § 10.1 `import` negatives; existing f3d import tests use `.f3d`.
+  - `LIVE_SCENARIOS`: the `import` row addition (`x.f3z` → `INVALID_PARAMS`).
+  - _Output_: `De-Fusion/defusion/tools/document.py`, `tests/test_document.py`
+  - _Reuse_: the existing `_abs_path` and § 9.1 extension lookup.
+  - _Verify_: `pytest -q tests/test_document.py -k import && python scripts/live_check.py --only document.import && python scripts/live_check.py --only document && pytest -q`
+- [x] **TASK-DOC-018** [REQ-DOC-029]: Record § 10.3 values
+  - Waits on TASK-DOC-016.
+  - Fill § 10.3 "Recorded values" from the first live run; no "none yet" or placeholder text remains.
+  - _Reuse_: the live-run output of TASK-DOC-016
+  - _Output_: `docs/specs/document/design.md` (§ 10.3 values only)
+  - _Verify_: `! grep -qE "filled by TASK|none yet" docs/specs/document/design.md`
