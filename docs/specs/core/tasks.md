@@ -153,3 +153,105 @@
   - _Output_: `README.md`
   - _Reuse_: design.md § 6, § 7, § 8, § 9 text; `install.py` output for the mcp.json entry.
   - _Verify_: `for h in Install mcp.json Config Profiles Token Units; do grep -qi "^## .*$h" README.md || exit 1; done`
+
+## Phase 6 — Bulk entries, read-only guard, folder limit
+- [x] **TASK-CORE-026** [REQ-CORE-050]: Bulk entries
+  - `types.py`: `bulk(t)` per § 5.12. `context.py`: `Ctx.bulk(entries, fn)` per § 5.12 (entry
+    records, `ActionError` → its error object, other exceptions via `errors.from_exception`,
+    `input` = entry or `model_dump()`, counts).
+  - `tests/test_bulk.py`: every REQ-CORE-050 acceptance case, through `actions.call` with
+    test-registered actions (a write `bulk(str)` action, a destructive one, one with a pydantic
+    entry model); plus 50 entries of 2 KiB each give `RESULT_TOO_LARGE` whose message says the
+    entries ran and whose hints carry no `offset`/`limit`.
+  - _Output_: `De-Fusion/defusion/types.py`, `De-Fusion/defusion/context.py`, `tests/test_bulk.py`
+  - _Reuse_: `errors.from_exception`, `ActionError.to_dict` (TASK-CORE-004), `actions.call`
+    (TASK-CORE-012), the isolated `registry` fixture.
+  - _Verify_: `pytest -q tests/test_bulk.py && pytest -q`
+- [x] **TASK-CORE-027** [REQ-CORE-051, REQ-CORE-052, REQ-CORE-054, REQ-CORE-025]: Document guard and pipeline
+  - `guard.py`: `VERIFY_TRIES`, `VERIFY_DELAY`, `saved_file`, `fresh_file`, `folder_path`, `norm`, `norm_folder`,
+    `check_folder`, `wait_read_only`, `set_read_only`, `ensure_editable` exactly as § 5.13.
+  - `actions.py`: `edits_document` keyword (default from `access`, decoration-time checks),
+    `preserve_read_only` added to the model for `"active"`/`"action"`, removed from the params and
+    set on `ctx.preserve_read_only`; § 5.3 step 6 guard call for `"active"` actions before snapshot
+    and undo group; `made_editable` copied into success and error envelopes (`results.py`);
+    `call_inline` drops `preserve_read_only` and runs no guard (§ 5.11);
+    `actions.call(..., folder_limit=None)` sets `ctx.folder_limit`.
+  - `context.py`: `folder_limit`, `preserve_read_only`, `made_editable` (§ 5.9; no `ensure_editable`/`check_folder` methods). `errors.py`: `READ_ONLY`, `READ_ONLY_NOT_APPLIED` constants.
+  - Declare `edits_document="none"` on `server.restart_addin`, `script.save_script`,
+    `script.delete_script`, `view.set_camera`, `cam.post_process` (§ 5.13 table).
+  - Fakes (`tests/fakes/adsk`): `adsk.doEvents()` (records calls); `executeTextCommand` for
+    `Commands.Start ActiveDocumentDeactivateCommand`/`ActiveDocumentActivateCommand` sets the
+    active fake document's cloud `DataFile.isReadOnly` after a configurable number of
+    `findFileById` reads (0 = at once; `None` = never); `DataFile.parentFolder` chains with
+    `isRoot`/`parentProject` as in document design § 10.1 (reuse those fakes).
+  - `tests/test_guard.py`: every REQ-CORE-051, REQ-CORE-052 and REQ-CORE-054 acceptance case,
+    with `guard.VERIFY_DELAY` monkeypatched to 0, and these cases: with `folder_limit="P/A"`, a
+    write action on a document whose `dataFile.id` is a local path, and one whose `dataFile`
+    raises, are `NOT_ALLOWED` with the function not called, and the same raising fake with no limit
+    runs the function; `set_read_only` on a non-active
+    document whose previous document's `activate()` returns `False` is `FUSION_ERROR` naming it;
+    the `READ_ONLY_NOT_APPLIED` error has non-empty `hints` naming `set_read_only`;
+    `check_folder(ctx, None)` has a non-empty hint and both paths in the message;
+    `tests/test_actions_registry.py`: schema and
+    decoration cases and the five `"none"` declarations.
+  - _Output_: `De-Fusion/defusion/guard.py`, `De-Fusion/defusion/actions.py`,
+    `De-Fusion/defusion/context.py`, `De-Fusion/defusion/results.py`, `De-Fusion/defusion/errors.py`,
+    `De-Fusion/defusion/tools/server.py`, `De-Fusion/defusion/tools/script.py`,
+    `De-Fusion/defusion/tools/view.py`, `De-Fusion/defusion/tools/cam.py`, `tests/fakes/adsk/*.py`,
+    `tests/test_guard.py`, `tests/test_actions_registry.py`
+  - _Reuse_: `ctx.text_command` (TASK-CORE-008), the pipeline of TASK-CORE-012, the document data
+    fakes of TASK-DOC-001.
+  - _Verify_: `pytest -q tests/test_guard.py tests/test_actions_registry.py tests/test_pipeline.py && pytest -q`
+- [x] **TASK-CORE-028** [REQ-CORE-053, REQ-CORE-029, REQ-CORE-049]: Folder limit selection
+  - `config.py`: key `folder` (validation per § 6.1 table, `settings().folder`), commented
+    `folder` line in `DEFAULT_TOML` (§ 6.1 text).
+  - `profiles.py`: `parse_query(qs)` → `(profile_items | None, folder | None)` with the § 6.4
+    errors, raised as `profiles.InvalidFolder(value, reason)`. `server.py`: the middleware caches
+    `(allowed, profile_items, folder_limit)` per query string, falls back to config `folder`,
+    catches `InvalidFolder` beside `InvalidProfile` at the two sites (server.py:88, 162) and returns
+    the § 6.4 JSON-RPC error, and passes `folder_limit` to `actions.call`.
+  - Tests: `tests/test_config.py` (`folder` valid; `" / "` and `5` give `load_error()` equal to the § 6.1 message),
+    `tests/test_profiles.py` (`parse_query` cases), `tests/test_profile_middleware.py` (the
+    cache-hit test asserts all three cached values) and `tests/test_mcp_surface.py` (every
+    REQ-CORE-053 acceptance case with an action that returns `ctx.folder_limit`; the
+    JSON-RPC text of a repeated `folder` equals the § 6.4 message).
+  - _Output_: `De-Fusion/defusion/config.py`, `De-Fusion/defusion/profiles.py`,
+    `De-Fusion/defusion/server.py`, `tests/test_config.py`,
+    `tests/test_profiles.py`, `tests/test_profile_middleware.py`, `tests/test_mcp_surface.py`
+  - _Reuse_: `guard.norm` (TASK-CORE-027), `profiles.parse_query` (now returning a tuple) and
+    `profiles.InvalidProfile`, the existing per-query cache and `INVALID_PROFILE` error path
+    (TASK-CORE-017), `urllib.parse.parse_qs`.
+  - _Verify_: `pytest -q tests/test_config.py tests/test_profiles.py tests/test_profile_middleware.py tests/test_mcp_surface.py && pytest -q`
+- [x] **TASK-CORE-029** [REQ-CORE-038, REQ-CORE-039]: Installer `--folder`
+  - `install.py`: `--folder PATH` (checked first; `norm` empty → message and exit 4), effective
+    folder = `--folder` else config `folder`, url `?folder=<quote(..., safe="")>` and the
+    `&profile=` hint line per § 9 step 5; `--help` lists `--folder` and exit code 4. `install.py`
+    runs outside Fusion, so it re-implements `norm` as one line rather than importing `defusion`.
+  - `tests/test_install.py`: the REQ-CORE-038/039 `--folder` acceptance cases; `--folder " / "`
+    prints the § 9 message and exits 4; `--help`
+    lists `--folder` and exit code 4; config `folder = " / "` prints the url without a query and
+    the output names the config error.
+  - _Output_: `install.py`, `tests/test_install.py`
+  - _Reuse_: the existing config read and print path of TASK-CORE-020; `urllib.parse.quote`.
+  - _Verify_: `pytest -q tests/test_install.py`
+- [x] **TASK-CORE-030** [REQ-CORE-040, REQ-CORE-055]: Harness, instructions, README
+  - Waits on TASK-DOC-011 and TASK-DOC-012 (document list parameters).
+  - `scripts/live_check.py`: `open_session(profile=None, folder=None)` adds `folder=<quote(folder,
+    safe="")>` to the query; the final freeze step uses `open {"files": [id]}`,
+    `set_read_only {"documents": [doc id]}`, `close {"documents": [doc id], "confirm": true}` and
+    reads `results[0]` (§ 10); each freeze-step call counts as done only when the envelope `ok`
+    and `results[0].ok` are true, else it prints `FAIL ...` and exits 1. `--help` and README state
+    that a live run needs config `folder` unset. `tests/test_live_check.py`: update the
+    freeze-step fake to the list forms; a fake `set_read_only` returning `results[0].ok: false`
+    makes the harness print `FAIL` and exit 1; `open_session(folder="P/A")` sends `?folder=P%2FA` (the in-process action returns
+    `ctx.folder_limit == "P/A"`).
+  - `server.py`: `INSTRUCTIONS` gains the three § 3.2 sentences; `tests/test_server_lifecycle.py`
+    asserts each verbatim.
+  - README.md: sections `## Bulk entries`, `## Read-only documents` (auto-unlock, `made_editable`,
+    `preserve_read_only`, `READ_ONLY`, save/save_as locking with `read_only: false` to skip,
+    `READ_ONLY_NOT_APPLIED`) and `## Folder limit` (`?folder=`, config `folder =`, `--folder`,
+    scope of § 5.13, not access control); the install section shows `--folder`.
+  - _Output_: `scripts/live_check.py`, `tests/test_live_check.py`, `De-Fusion/defusion/server.py`,
+    `tests/test_server_lifecycle.py`, `README.md`
+  - _Reuse_: the harness session code of TASK-CORE-021; README sections of TASK-CORE-025.
+  - _Verify_: `pytest -q tests/test_live_check.py tests/test_server_lifecycle.py && for h in "Bulk entries" "Read-only documents" "Folder limit"; do grep -q "^## $h" README.md || exit 1; done && grep -qF preserve_read_only README.md && grep -qF READ_ONLY_NOT_APPLIED README.md && grep -qF '?folder=' README.md && grep -qF 'folder =' README.md && grep -qF -- '--folder' README.md`

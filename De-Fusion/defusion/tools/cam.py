@@ -617,7 +617,7 @@ def _post_via_library(ctx, cam, post, targets, name, folder, comment, output_uni
     return url.toString()
 
 
-@action("cam", access="write", timeout=120)
+@action("cam", access="write", timeout=120, edits_document="none")
 def post_process(
     ctx: Ctx,
     post: str,

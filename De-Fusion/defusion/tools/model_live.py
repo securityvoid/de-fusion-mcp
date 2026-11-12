@@ -1,7 +1,7 @@
 """Live scenarios of the ``model`` tool (design § 14.2); collected into ``model.LIVE_SCENARIOS``."""
 import json
 
-from .live_common import _MM, _lc, _near
+from .live_common import _MM, _fresh, _lc, _near
 
 
 # --- helpers ---------------------------------------------------------------------------------
@@ -849,24 +849,26 @@ async def _selection_sets(session):
 
 
 async def _set_design_intent(session):
-    env = await _ok_or_unsupported(session, "set_design_intent", {"intent": "part"})
-    if env["ok"]:
-        assert env["result"]["design_intent"] == "part", env
+    async with _fresh(session):  # Fusion refuses part intent once earlier scenarios added child components
+        env = await _ok_or_unsupported(session, "set_design_intent", {"intent": "part"})
+        if env["ok"]:
+            assert env["result"]["design_intent"] == "part", env
 
 
 async def _set_modeling_in_assembly(session):
-    # Fusion only accepts the setting in an assembly design
-    env = await _ok_or_unsupported(session, "set_design_intent", {"intent": "assembly"})
-    if not env["ok"]:
-        return
-    try:
-        for enabled in (True, False):
-            env = await _ok_or_unsupported(session, "set_modeling_in_assembly", {"enabled": enabled})
-            if not env["ok"]:
-                return
-            assert env["result"] == {"enabled": enabled}, env
-    finally:
-        await _m(session, "set_design_intent", {"intent": "part"})
+    # Fusion only accepts the setting in an assembly design; a fresh design so switching back to part is allowed
+    async with _fresh(session):
+        env = await _ok_or_unsupported(session, "set_design_intent", {"intent": "assembly"})
+        if not env["ok"]:
+            return
+        try:
+            for enabled in (True, False):
+                env = await _ok_or_unsupported(session, "set_modeling_in_assembly", {"enabled": enabled})
+                if not env["ok"]:
+                    return
+                assert env["result"] == {"enabled": enabled}, env
+        finally:
+            await _m(session, "set_design_intent", {"intent": "part"})
 
 
 async def _activate_root(session):

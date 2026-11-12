@@ -958,7 +958,7 @@ def compare_meshes(ctx: Ctx, test: Entity, reference: Entity, samples: int = 200
 import pathlib  # noqa: E402
 import tempfile  # noqa: E402
 
-from .live_common import _MM, _do, _fresh, _lc, _near  # noqa: E402
+from .live_common import _MM, _do, _fresh, _lc, _near, _one  # noqa: E402
 
 
 async def _i(session, act, params=None):
@@ -1073,8 +1073,8 @@ async def _compare_meshes(session):
         with tempfile.TemporaryDirectory() as tmp:
             for name, body in (("five", five), ("six", six)):
                 path = str(pathlib.Path(tmp) / (name + ".stl"))
-                await _do(session, "document", "export", {"path": path, "format": "stl", "body": body})
-                meshes.append((await _do(session, "document", "import_mesh", {"path": path, "unit": "mm"}))["meshes"][0])
+                await _one(session, "document", "export", {"paths": [path], "format": "stl", "body": body})
+                meshes.append((await _one(session, "document", "import_mesh", {"paths": [path], "unit": "mm"}))["meshes"][0])
         own = await _i(session, "compare_meshes", {"test": meshes[0], "reference": five})
         assert own["forward"]["max"] < 0.001, own
         diff = await _i(session, "compare_meshes", {"test": meshes[1], "reference": meshes[0]})

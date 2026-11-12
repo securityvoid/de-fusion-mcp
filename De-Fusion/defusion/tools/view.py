@@ -264,7 +264,7 @@ def _apply_controls(vp, orbit_yaw, orbit_pitch, orbit_roll, pan_x, pan_y, zoom):
     vp.camera = cam
 
 
-@action("view", access="write", undo_group=False)
+@action("view", access="write", undo_group=False, edits_document="none")
 def set_camera(ctx: Ctx, camera: CameraSnapshot | None = None,
                view: StandardView | None = None, projection: Projection | None = None,
                fit: bool = False, orbit_yaw: Angle | None = None, orbit_pitch: Angle | None = None,

@@ -329,6 +329,7 @@ def run(S, ctx, _action, **params):
     validated = act.model.model_validate(params)
     kwargs = types.resolve_params(ctx, act, validated)
     kwargs.pop("confirm", None)
+    kwargs.pop("preserve_read_only", None)
     return act.fn(ctx, **kwargs)
 
 

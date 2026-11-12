@@ -22,6 +22,13 @@ async def _do(session, tool, act, params):
     return env["result"]
 
 
+async def _one(session, tool, act, params):
+    """The result of a one-entry list call (document design § 2.7); fails unless ``results[0].ok``."""
+    first = (await _do(session, tool, act, params))["results"][0]
+    assert first["ok"], "%s.%s entry: %s" % (tool, act, json.dumps(first.get("error"))[:400])
+    return first["result"]
+
+
 @contextlib.asynccontextmanager
 async def _fresh(session):
     """A new design for one scenario, closed afterwards (the harness's scratch design stays untouched)."""
@@ -31,7 +38,7 @@ async def _fresh(session):
     try:
         yield
     finally:
-        await lc.call(session, "document", "close", {"document": doc["id"], "confirm": True})
+        await lc.call(session, "document", "close", {"documents": [doc["id"]], "confirm": True})
         await lc.call(session, "document", "activate", {"document": scratch})
 
 

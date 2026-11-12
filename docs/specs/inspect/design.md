@@ -329,8 +329,9 @@ through `live_check.call(session, tool, action, params)`. Boxes come from `live_
 - `interference`: two 10 mm cubes overlapping 5 mm in X → one pair, volume 500; body count
   unchanged.
 - `compare_meshes`: export the 20 × 10 × 5 box and a 20 × 10 × 6 box each with
-  `document.export(path=<temp dir>/<name>.stl, format="stl", body=<ref>)` and insert
-  both with `document.import_mesh(path=..., unit="mm")` (mesh Refs from its `meshes`); mesh vs own BRep → `forward.max` < 0.001; 6 mm mesh vs
+  `document.export(paths=[<temp dir>/<name>.stl], format="stl", body=<ref>)` and insert
+  both with `document.import_mesh(paths=[...], unit="mm")` (mesh Refs from
+  `results[0].result.meshes`, read only when envelope `ok` and `results[0].ok` are both true, else the scenario fails; document design § 2.7); mesh vs own BRep → `forward.max` < 0.001; 6 mm mesh vs
   5 mm mesh → `forward.max` 1 ± 0.001.
 - `get_selection`: `ui` selection empty → `total` 0.
 - `section_analysis`: `"XY"`, offset 2 → `analysis.name` present; a second call → index + 1.

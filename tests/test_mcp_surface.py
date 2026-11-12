@@ -294,3 +294,67 @@ def test_config_error_blocks_everything_but_status(surface, text, monkeypatch):
 
     assert session(8642)(lst) == {"server"}
 
+
+
+# --- folder limit (REQ-CORE-053) -------------------------------------------------------------------------------
+
+def _folder_surface(surface, config_text=""):
+    @action("model", access="read")
+    def where(ctx) -> dict:
+        """Report the folder limit."""
+        return {"folder_limit": ctx.folder_limit, "items": ctx.profile_items}
+
+    surface.write(config_text)
+    surface.start()
+    return lambda query="": call_tool(surface.port, "model", "where", query)
+
+
+@pytest.mark.parametrize("query,want", [("?folder=P%2FA", "P/A"), ("?folder=%2FP%2FA%2F", "P/A"), ("", None)])
+def test_folder_limit_from_query(surface, query, want):
+    where = _folder_surface(surface)
+    assert where(query)["result"]["folder_limit"] == want
+
+
+def test_folder_limit_from_config_and_query_wins(surface):
+    where = _folder_surface(surface, 'folder = "P"\n')
+    assert where()["result"]["folder_limit"] == "P"
+    assert where("?folder=Q%2FB")["result"]["folder_limit"] == "Q/B"
+
+
+def test_folder_and_profile_both_apply(surface):
+    where = _folder_surface(surface)
+    r = where("?folder=P&profile=readonly")["result"]
+    assert r == {"folder_limit": "P", "items": ["-write", "-destructive"]}
+    denied = call_tool(surface.port, "model", "make", "?folder=P&profile=readonly")
+    assert denied["error"]["code"] == "NOT_ALLOWED" and RAN == []
+
+
+@pytest.mark.parametrize("query,value,reason", [
+    ("?folder=", "", "folder is empty"),
+    ("?folder=a&folder=b", "folder=a&folder=b", "folder may be given only once"),
+])
+def test_invalid_folder_is_json_rpc_error(surface, query, value, reason):
+    _folder_surface(surface)
+    with pytest.raises(MCPError) as e:
+        call_tool(surface.port, "model", "where", query)
+    assert "folder" in e.value.message
+    assert e.value.message == "invalid folder '%s': %s; use ?folder=<Project>/<Folder> (URL-encoded)" % (value, reason)
+    assert RAN == []
+
+
+@pytest.mark.skipif(_port_8642_in_use(), reason="port 8642 is in use here")
+@pytest.mark.parametrize("value,shown", [('" / "', " / "), ("5", "5")])
+def test_invalid_config_folder_is_config_error(surface, value, shown):
+    """A config error serves on the default port 8642 with only the status actions (§ 6.1)."""
+    @action("model", access="read")
+    def where(ctx) -> dict:
+        """Report the folder limit."""
+        return {"folder_limit": ctx.folder_limit}
+
+    (surface.dir / "config.toml").write_text("folder = %s\n" % value)
+    surface.start()
+    msg = "config folder '%s': needs a project-qualified path like Project/Folder" % shown
+    assert config.load_error() == "invalid config %s: %s" % (config.CONFIG_PATH, msg)
+    status = call_tool(8642, "server", "status")
+    assert status["result"]["config"]["error"] == config.load_error()
+    assert call_tool(8642, "model", "where")["error"]["code"] == "NOT_ALLOWED"

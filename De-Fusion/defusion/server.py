@@ -27,7 +27,12 @@ INSTRUCTIONS = (
     '{"action": "<name>", "params": {...}}. Call `action="help"` (optionally with params '
     '{"action": "<name>"}) to get the allowed actions or one action\'s parameter schema. Lengths and '
     'angles accept unit expressions such as "2 in" or "45 deg"; a top-level `units` object '
-    "({length, angle}) sets the units of the returned values."
+    "({length, angle}) sets the units of the returned values. "
+    "Document file actions take a list of 1 to 50 entries and return one result per entry with ok and "
+    "failed counts. A write to a saved read-only document makes it editable first unless "
+    "params.preserve_read_only is true; document.save and document.save_as make the saved file read-only "
+    "again. A folder=<Project/Path> query on the URL limits cloud files, folders and edits of saved "
+    "documents to that folder and its subfolders."
 )
 
 ALWAYS_ALLOWED = ("server.status", "server.job_status")
@@ -55,10 +60,12 @@ class _Profiles:
         self._cache = {}
 
     def for_query(self, qs):
-        """``(allowed "tool.action" frozenset, expanded items)`` for a raw query string; raises InvalidProfile."""
+        """``(allowed "tool.action" frozenset, expanded items, folder limit | None)`` for a raw query
+        string; raises InvalidProfile or InvalidFolder."""
         hit = self._cache.get(qs)
         if hit is None:
-            hit = self._resolve(profiles.parse_query(qs) or self.cfg.default_profile)
+            items, folder = profiles.parse_query(qs)
+            hit = self._resolve(items or self.cfg.default_profile) + (folder or self.cfg.folder,)
             if len(self._cache) >= self.MAX_CACHED:
                 self._cache.clear()
             self._cache[qs] = hit
@@ -84,8 +91,8 @@ def _profile_middleware(prof):
 
     async def middleware(ctx, call_next):
         try:
-            allowed, _ = prof.for_query(_query(ctx))
-        except profiles.InvalidProfile as exc:
+            allowed = prof.for_query(_query(ctx))[0]
+        except (profiles.InvalidProfile, profiles.InvalidFolder) as exc:
             raise MCPError(INVALID_PARAMS, str(exc)) from None
         result = await call_next(ctx)
         if ctx.method == "tools/list":
@@ -116,9 +123,9 @@ def _tool_function(tool, prof, output_units):
             args["params"] = params
         if units is not None:
             args["units"] = units
-        allowed, items = prof.for_query(_query(ctx.request_context))
+        allowed, items, folder_limit = prof.for_query(_query(ctx.request_context))
         return await anyio.to_thread.run_sync(
-            lambda: actions.call(tool, args, allowed, items, output_units, denied_note=prof.error)
+            lambda: actions.call(tool, args, allowed, items, output_units, folder_limit, denied_note=prof.error)
         )
 
     fn.__name__ = tool

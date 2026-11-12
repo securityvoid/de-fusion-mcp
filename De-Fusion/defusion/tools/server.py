@@ -172,7 +172,7 @@ def _scheduled(script, already):
     }
 
 
-@action("server", access="write", undo_group=False)
+@action("server", access="write", undo_group=False, edits_document="none")
 def restart_addin(ctx: Ctx) -> dict:
     """Restart De-Fusion about 750 ms after replying; reloads its code and config.
 

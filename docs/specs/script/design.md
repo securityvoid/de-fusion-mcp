@@ -17,6 +17,9 @@ dispatch, undo grouping, change summary, envelope, paging, errors, profiles) is 
 | `delete_script` | destructive | 30 s | `undo_group=False` | yes |
 | `execute_python` | destructive | 60 s | default (on) | yes |
 
+`save_script` and `delete_script` declare `edits_document="none"` (core design § 5.13 table: local
+files only); `execute_python` keeps the default `"active"` (guarded, accepts `preserve_read_only`).
+
 Core names used by this module: `defusion.config.CONFIG_DIR` (`pathlib.Path` of the core design
 § 6.1 config dir), `ActionError` (core design § 5.10), `Ctx` (core design § 5.9).
 

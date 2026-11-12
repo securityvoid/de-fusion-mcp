@@ -141,3 +141,26 @@ def test_config_dir_env_override(tmp_path, monkeypatch):
     monkeypatch.delenv("DEFUSION_CONFIG_DIR")
     assert config._default_dir().name == ".defusion"
     assert config.CONFIG_PATH.name == "config.toml" and config.CONFIG_PATH.parent == config.CONFIG_DIR
+
+
+# --- folder (REQ-CORE-053, design § 6.1) -------------------------------------------------------------------
+
+@pytest.mark.parametrize("value,want", [('"P"', "P"), ('"My Project/Parts"', "My Project/Parts"), ('" /P//A/ "', "P/A")])
+def test_folder_valid(cfgdir, value, want):
+    write(cfgdir, "folder = %s\n" % value)
+    cfg, err = config.load()
+    assert err is None and cfg.folder == want and config.settings().folder == want
+
+
+def test_folder_default_none_and_commented_in_default_toml(cfgdir):
+    assert config.load()[0].folder is None
+    assert '# folder = "My Project/Parts"    # optional default folder limit; see § 6.4\n' in config.DEFAULT_TOML
+
+
+@pytest.mark.parametrize("value,shown", [('" / "', " / "), ("5", "5"), ('""', "")])
+def test_folder_invalid_is_config_error(cfgdir, value, shown):
+    write(cfgdir, "folder = %s\n" % value)
+    cfg, err = config.load()
+    msg = "config folder '%s': needs a project-qualified path like Project/Folder" % shown
+    assert config.load_error() == err == "invalid config %s: %s" % (config.CONFIG_PATH, msg)
+    assert cfg.folder is None

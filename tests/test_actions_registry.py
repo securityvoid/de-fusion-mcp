@@ -34,7 +34,7 @@ def test_valid_action_registers(registry):
     assert a.help.startswith("Extrude a sketch profile.") and "Longer help text." in a.help
     assert (a.access, a.timeout, a.undo_group, a.main_thread) == ("write", 60, True, True)
     schema = a.input_schema()
-    assert set(schema["properties"]) == {"distance", "operation", "name"}
+    assert set(schema["properties"]) == {"distance", "operation", "name", "preserve_read_only"}
     assert schema["required"] == ["distance"]
     assert schema["additionalProperties"] is False
     assert schema["properties"]["operation"]["enum"] == list(__import__("typing").get_args(Operation))
@@ -73,7 +73,7 @@ def test_destructive_adds_confirm(registry):
         """Close."""
 
     a = registry.get("document", "close")
-    assert a.params == ("force", "confirm")
+    assert a.params == ("force", "confirm", "preserve_read_only")
     assert a.model.model_validate({}).confirm is False
     assert a.input_schema()["properties"]["confirm"]["type"] == "boolean"
 
@@ -381,3 +381,72 @@ def test_tools_init_lists_the_ten_modules():
     for m in "document sketch model assembly history inspect view cam script server".split():
         assert '"%s"' % m in src
     assert "import_tool_modules" in src
+
+
+# --- edits_document (REQ-CORE-051, design § 5.1, § 5.13) ------------------------------------------------
+
+def test_edits_document_defaults_and_schema(registry):
+    @action("model", access="write")
+    def w(ctx: Ctx) -> dict:
+        """W."""
+
+    @action("model", access="destructive")
+    def d(ctx: Ctx) -> dict:
+        """D."""
+
+    @action("model", access="read")
+    def r(ctx: Ctx) -> dict:
+        """R."""
+
+    @action("model", access="write", edits_document="none")
+    def n(ctx: Ctx) -> dict:
+        """N."""
+
+    @action("model", access="write", edits_document="action")
+    def a(ctx: Ctx) -> dict:
+        """A."""
+
+    got = {x.name: x.edits_document for x in registry.for_tool("model")}
+    assert got == {"w": "active", "d": "active", "r": "none", "n": "none", "a": "action"}
+    props = {x.name: set(x.input_schema().get("properties", {})) for x in registry.for_tool("model")}
+    assert "preserve_read_only" in props["w"] and "preserve_read_only" in props["d"]
+    assert "preserve_read_only" in props["a"]
+    assert "preserve_read_only" not in props["r"] and "preserve_read_only" not in props["n"]
+    assert registry.get("model", "w").model.model_validate({}).preserve_read_only is False
+
+
+def test_edits_document_decoration_errors(registry):
+    def f(ctx: Ctx) -> dict:
+        """F."""
+
+    with pytest.raises(ActionDefinitionError):
+        action("model", access="read", edits_document="active")(f)
+    with pytest.raises(ActionDefinitionError):
+        action("server", name="g", access="read", main_thread=False, edits_document="action")(f)
+    with pytest.raises(ActionDefinitionError):
+        action("model", name="h", access="write", edits_document="all")(f)
+
+    def p(ctx: Ctx, preserve_read_only: bool = False) -> dict:
+        """P."""
+
+    with pytest.raises(ActionDefinitionError):
+        action("model", access="write")(p)
+
+
+@pytest.mark.parametrize("tool, name", [
+    ("server", "restart_addin"), ("script", "save_script"), ("script", "delete_script"),
+    ("view", "set_camera"), ("cam", "post_process"),
+])
+def test_exempt_actions_declare_none(registry, monkeypatch, tool, name):
+    import importlib
+    import types as pytypes
+    from pathlib import Path
+
+    tools_dir = Path(actions.__file__).parent / "tools"
+    pkg = pytypes.ModuleType("defusion.tools")
+    pkg.__path__ = [str(tools_dir)]
+    monkeypatch.setitem(sys.modules, "defusion.tools", pkg)
+    for k in [k for k in sys.modules if k.startswith("defusion.tools.")]:
+        monkeypatch.delitem(sys.modules, k)
+    importlib.import_module("defusion.tools.%s" % tool)
+    assert registry.get(tool, name).edits_document == "none"

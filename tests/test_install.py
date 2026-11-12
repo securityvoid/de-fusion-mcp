@@ -159,3 +159,59 @@ def test_help_lists_flags_and_exit_codes(capsys):
     assert e.value.code == 0
     out = capsys.readouterr().out
     assert "--uninstall" in out and "--fusion-python" in out and "1 pip failed" in out and "3 link conflict" in out
+    assert "--folder" in out and "4 invalid --folder" in out
+
+
+# --- --folder and config folder (REQ-CORE-038, REQ-CORE-039, REQ-CORE-053) ------------------------------
+
+def test_folder_flag_sets_url_and_profile_hint(env, capsys):
+    env.build("b", 1)
+    assert install.main(["--folder", "My Project/Parts"]) == 0
+    out = capsys.readouterr().out
+    assert entry(out)["url"] == "http://127.0.0.1:8642/mcp?folder=My%20Project%2FParts"
+    assert "Append &profile=<items> to the url to select a profile." in out
+    assert env.cfg.read_text() == install.default_toml()  # --folder does not write config.toml
+
+
+def test_folder_flag_is_normalised(env, capsys):
+    env.build("b", 1)
+    install.main(["--folder", "/P/A/"])
+    assert entry(capsys.readouterr().out)["url"] == "http://127.0.0.1:8642/mcp?folder=P%2FA"
+
+
+def test_config_folder_used_without_flag_and_flag_wins(env, capsys):
+    env.build("b", 1)
+    env.cfg.parent.mkdir()
+    env.cfg.write_text('port = 8642\nfolder = "P"   # default limit\n')
+    install.main([])
+    assert entry(capsys.readouterr().out)["url"] == "http://127.0.0.1:8642/mcp?folder=P"
+    install.main(["--folder", "Q/B"])
+    assert entry(capsys.readouterr().out)["url"] == "http://127.0.0.1:8642/mcp?folder=Q%2FB"
+
+
+def test_no_folder_url_has_no_query(env, capsys):
+    env.build("b", 1)
+    install.main([])
+    out = capsys.readouterr().out
+    assert entry(out)["url"] == "http://127.0.0.1:8642/mcp"
+    assert "Append ?profile=<items> to the url to select a profile." in out
+
+
+@pytest.mark.parametrize("line,shown", [('folder = " / "', " / "), ("folder = 5", "5")])
+def test_invalid_config_folder_prints_url_without_query_and_names_error(env, capsys, line, shown):
+    env.build("b", 1)
+    env.cfg.parent.mkdir()
+    env.cfg.write_text("port = 8642\n%s\n" % line)
+    assert install.main([]) == 0
+    cap = capsys.readouterr()
+    assert entry(cap.out)["url"] == "http://127.0.0.1:8642/mcp"
+    assert "Append ?profile=" in cap.out
+    assert "config folder '%s': needs a project-qualified path like Project/Folder" % shown in cap.err
+
+
+@pytest.mark.parametrize("value", [" / ", "", "//"])
+def test_invalid_folder_flag_exits_4_before_anything(env, capsys, value):
+    env.build("b", 1)
+    assert install.main(["--folder", value]) == 4
+    assert capsys.readouterr().err.strip() == "--folder needs a project-qualified path like Project/Folder"
+    assert env.calls == [] and not env.link.is_symlink()

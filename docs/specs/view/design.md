@@ -126,6 +126,8 @@ Orthographic: `ok, w, h = cam.getExtents()` (`ok` false → `FUSION_ERROR`). Per
 caller's `units`.
 
 ### 2.6 set_camera — write, `undo_group=False` (REQ-VIEW-006)
+Declared `edits_document="none"` (core design § 5.13 table): a camera move does not edit the
+document, so it never makes a read-only document editable and is not folder-limited.
 ```python
 class CameraSnapshot(BaseModel):
     model_config = ConfigDict(extra="ignore")   # accepts get_camera output unchanged

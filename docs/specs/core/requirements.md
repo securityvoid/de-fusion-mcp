@@ -61,7 +61,8 @@ installer, the live test harness and README.md. Tool actions are specified by th
   bound to `127.0.0.1:<port>` (default 8642), with transport security allowing only Host/Origin
   `127.0.0.1:<port>` and `localhost:<port>`; it shall expose no SSE routes, stdio, resources or
   prompts. `INSTRUCTIONS` shall be one paragraph stating that each tool takes `action` + `params`,
-  that `action="help"` returns an action's schema, and that lengths accept unit expressions (§ 3.2).
+  that `action="help"` returns an action's schema, and that lengths accept unit expressions,
+  followed by the three sentences of § 3.2 (REQ-CORE-055).
   - _Acceptance_: SDK client `initialize` reports server name `De-Fusion` and the instructions
     text; `resources/list` and `prompts/list` return method-not-found or empty; a request with
     `Host: evil.example` is rejected; a `tools/call` with `Host: 127.0.0.1:<port>` and
@@ -94,7 +95,7 @@ installer, the live test harness and README.md. Tool actions are specified by th
 
 ### Action framework
 - **REQ-CORE-010**: `@action(tool, name=None, access=..., timeout=30, undo_group=True,
-  main_thread=True)` shall register
+  main_thread=True, edits_document=None)` shall register
   a function under `(tool, name)` with `tool` in `document sketch model assembly history inspect
   view cam script server`, `access` in `read write destructive`, name defaulting to the function
   name (overridable, e.g. `name="list"`), summary = first docstring line and help = full
@@ -242,7 +243,7 @@ installer, the live test harness and README.md. Tool actions are specified by th
 ### Configuration and profiles
 - **REQ-CORE-029**: Config shall be read with `tomllib` at `start()` from `<config dir>/config.toml`
   (`~/.defusion`, Windows `%USERPROFILE%\.defusion`) with keys `port`, `token`, `log_level`,
-  `default_profile`, `[units]` and `[profiles]` and built-in defaults for missing keys; env
+  `default_profile`, `folder`, `[units]` and `[profiles]` and built-in defaults for missing keys; env
   `DEFUSION_CONFIG_DIR`, when set, replaces the config dir (used by tests); a missing file uses
   defaults. Any config error (unparseable file, a key invalid per the § 6.1 table, invalid profile,
   blank token) shall be logged and the server shall start with only `server.status` and
@@ -323,33 +324,38 @@ installer, the live test harness and README.md. Tool actions are specified by th
   Fusion's AddIns `De-Fusion` path, keeping a correct existing link and stopping with exit 3 and a message
   naming the path and saying to remove it if anything else is there; a non-zero pip exit shall print
   pip's output, exit 1 and perform no later step. Flags and exit codes are those of § 9: `--fusion-python
-  PATH`, `--uninstall`, `--help`; exit 0 success, 1 pip failure, 2 Fusion Python not
-  found, 3 link conflict (§ 9 steps 1–3).
+  PATH`, `--uninstall`, `--folder PATH`, `--help`; exit 0 success, 1 pip failure, 2 Fusion Python not
+  found, 3 link conflict, 4 invalid `--folder` (§ 9 steps 1–3).
   - _Acceptance_: Unit tests with temp dirs: the newest of two fake builds is chosen; none found →
     exit 2 with paths; the pip command line is exact; an existing correct link is kept; a regular
     directory at the link path stops the installer with the message; a failing fake pip exits 1 and
-    creates no link; `--help` lists the flags.
+    creates no link; `--help` lists the flags including `--folder` and exit code 4; `--folder " / "` prints
+    the § 9 message (equal to the design text), exits 4 and makes no pip call.
 - **REQ-CORE-039**: `install.py` shall write `config.toml` with the § 6.1 content if absent, print,
   with the configured port, the `mcp.json` entry `{"mcpServers": {"de-fusion": {"type": "http", "url":
   "http://127.0.0.1:<port>/mcp"}}}` plus a `headers` line when a token is configured and how to add
-  `?profile=`; `--uninstall` shall remove the link and `lib/` and keep `config.toml` (§ 9 steps
+  `?profile=`, with `?folder=<URL-encoded folder>` on the url (and `&profile=` in the hint) when
+  `--folder` or the config `folder` is set (`--folder` wins, § 9 step 5); `--uninstall` shall remove the link and `lib/` and keep `config.toml` (§ 9 steps
   4–5).
   - _Acceptance_: Unit tests: an existing config is not overwritten; output contains the JSON and,
-    with a token, `Authorization: Bearer`; `--uninstall` leaves only `config.toml`.
+    with a token, `Authorization: Bearer`; `--uninstall` leaves only `config.toml`; `--folder
+    "My Project/Parts"` prints url `http://127.0.0.1:8642/mcp?folder=My%20Project%2FParts` and
+    `Append &profile=`; config `folder = "P"` without `--folder` prints `?folder=P`; with neither the
+    url has no query.
 - **REQ-CORE-040**: `scripts/live_check.py [--profile P] [--port N] [--only tool[.action]]` shall
   connect to the running add-in on `--port` (default: the config `port`, 8642) with the SDK client,
   reading the token only from env `DEFUSION_TOKEN`; it shall create a new scratch design document on
   its own `full` profile session and run each
   tool module's `LIVE_SCENARIOS` entries `(name, "tool.action", async fn(session))` passing the SDK
   `ClientSession` on the `--profile` session (`--only tool` selects a module, `--only tool.action` the entries with
-  that tag); it shall expose async context manager `open_session(profile=None)` for scenarios that
-  need another profile, print one `PASS`/`FAIL` line per scenario, close the scratch document without
+  that tag); it shall expose async context manager `open_session(profile=None, folder=None)` for
+  scenarios that need another profile or a folder limit (`folder` sent as `?folder=`), print one `PASS`/`FAIL` line per scenario, close the scratch document without
   saving on the `full` session and exit 1 on any failure, 2 when the server is unreachable. README.md documents
   install, the `mcp.json` entry, the config file, profiles and selectors, the token and units
   (§ 10).
   - _Acceptance_: `DEFUSION_TOKEN=t0k python scripts/live_check.py --only server` against the running add-in prints
     PASS lines and exits 0; `--only server.status` runs only scenarios tagged `server.status`; a
-    scenario forced to fail exits 1; README.md contains sections for
+    scenario forced to fail exits 1; `open_session(folder="P/A")` sends `?folder=P%2FA`; README.md contains sections for
     install, mcp.json, config, profiles, token and units.
 
 ### Framework contract used by tool sets
@@ -416,6 +422,83 @@ installer, the live test harness and README.md. Tool actions are specified by th
   - _Acceptance_: Unit tests call each accessor with fakes from a non-dispatcher thread and assert
     values (one queued item → `queue_depth() == 1`; broken config → `load_error()` non-empty;
     token configured → `auth.token()` equals it; after `start()` → `state() == "running"`).
+
+### Bulk entries, read-only guard and folder limit
+- **REQ-CORE-050**: `types.bulk(t)` shall be `Annotated[list[t], Field(min_length=1,
+  max_length=50)]`, and `ctx.bulk(entries, fn)` shall call `fn` per entry in order, recording
+  `{"input", "ok": true, "result"}` or `{"input", "ok": false, "error"}` (envelope error shape;
+  non-`ActionError` → `FUSION_ERROR`) without stopping at a failed entry, and return
+  `{"results", "ok", "failed"}`; the envelope `ok` shall be true whenever the call ran, and
+  `confirm` is given once per call; a result over the § 5.5 size budget shall give `RESULT_TOO_LARGE`
+  with a message saying the entries ran (§ 5.12).
+  - _Acceptance_: Unit tests with a test action taking `bulk(str)`: 0 and 51 entries →
+    `INVALID_PARAMS` and `fn` is never called; 50 entries succeed; an `ActionError("NOT_FOUND")` on
+    entry 2 of 3 gives entries 1 and 3 `ok`, entry 2 `NOT_FOUND`, `ok: 2, failed: 1`, results in
+    input order; a `RuntimeError` entry gives `FUSION_ERROR`; all entries failing still gives
+    envelope `ok: true`; a destructive bulk action without `confirm` → `CONFIRM_REQUIRED` with `fn`
+    never called; a pydantic-model entry's `input` equals its `model_dump()`; entries whose results
+    exceed 65,536 bytes → `RESULT_TOO_LARGE` with a message saying the entries ran.
+- **REQ-CORE-051**: `@action` `edits_document` shall default to `"active"` for write/destructive
+  and `"none"` for read; `"active"` and `"action"` shall add `preserve_read_only: bool = false` to
+  the model, exposed only as `ctx.preserve_read_only`; for `"active"` actions with an open document
+  the pipeline shall call `guard.ensure_editable(ctx, ctx.document)` after Ref resolution and before
+  the snapshot and undo group, which for a saved read-only document makes it editable (or fails
+  `READ_ONLY` when `preserve_read_only` is true) and lists it in the envelope's `made_editable`;
+  the § 5.13 exemption table's actions shall declare `"none"` (§ 5.1, § 5.3, § 5.5, § 5.13).
+  - _Acceptance_: Unit tests with fakes: a write action's schema has `preserve_read_only`, a read
+    action's and a `"none"` action's do not; `"active"` on a read action and `"action"` on a
+    `main_thread=False` action raise at decoration; a write call on a saved read-only fake document
+    records `Commands.Start ActiveDocumentActivateCommand` before `PTransaction.Start` and the
+    envelope has `made_editable: [<name>]`; with `preserve_read_only: true` it returns `READ_ONLY`,
+    runs no text command and never calls the function; an unsaved document causes no
+    `findFileById` and no command; a saved editable document causes no command; a `"none"` action
+    on a read-only document causes no command; the function never receives `preserve_read_only`;
+    `server.restart_addin`, `script.save_script`, `script.delete_script`, `view.set_camera` and
+    `cam.post_process` are registered with `"none"`.
+- **REQ-CORE-052**: `guard.set_read_only(ctx, doc, want, lookup)` shall activate `doc` when it is
+  not active, run Make Read-Only (`ActiveDocumentDeactivateCommand`) or Make Editable
+  (`ActiveDocumentActivateCommand`), re-activate the previous document, and verify through
+  `wait_read_only` (a fresh `DataFile` from `lookup`, up to 10 tries 1 s apart with
+  `adsk.doEvents()`), returning whether the state was observed; `ensure_editable` shall fail
+  `READ_ONLY_NOT_APPLIED` when it was not (§ 5.13).
+  - _Acceptance_: Unit tests with `VERIFY_DELAY` 0: a fake whose fresh `isReadOnly` changes on the
+    3rd lookup returns `True` after 3 lookups; one that never changes returns `False` after exactly
+    10 lookups; a lookup that raises counts as not observed; a non-active document is activated
+    and the previous one re-activated even when the command raises; `ensure_editable` on a
+    never-unlocking fake returns `READ_ONLY_NOT_APPLIED` and leaves `made_editable` empty.
+- **REQ-CORE-053**: The query key `folder` (URL-encoded project-qualified path) shall select the
+  request's folder limit, defaulting to config `folder`; it shall be normalised, cached per
+  query string with the allowed set and profile items, and passed to `ctx.folder_limit`; an empty value
+  or a repeated key shall fail every MCP request on that URL with JSON-RPC error of § 6.4;
+  a config `folder` that is blank or not a string is the config error of § 6.1, and the installer prints the url without `?folder=` and names the error
+  (§ 6.1, § 6.4, § 9).
+  - _Acceptance_: In-process SDK tests: `?folder=P%2FA` gives `ctx.folder_limit == "P/A"`;
+    `?folder=%2FP%2FA%2F` gives `"P/A"`; no query with config `folder = "P"` gives `"P"`; no query
+    and no config gives `None`; `?folder=` and `?folder=a&folder=b` return the JSON-RPC error naming
+    `folder`, its message equal to the § 6.4 text; `?folder=P&profile=readonly` applies both; a second request with the same query is a
+    cache hit returning the same allowed set, profile items and folder limit; config `folder = " / "`
+    and `folder = 5` give that config error, its message the § 6.1 text after the `invalid config <path>: ` prefix; the installer with config `folder = " / "` prints a url
+    without a query and names the error.
+- **REQ-CORE-054**: `guard.check_folder(ctx, path)` shall pass when no limit is set or the path's
+  segments start with the limit's segments, and otherwise (including an unknown path) fail
+  `NOT_ALLOWED` naming the path and the limit; `ensure_editable` shall apply it to every saved
+  document it guards before any unlock, and never-saved documents shall never be limited; when a
+  limit is set and a document's `dataFile` folder cannot be read (upload pending) it shall fail
+  closed with `NOT_ALLOWED` (§ 5.13).
+  - _Acceptance_: Unit tests with limit `P/A`: `P/A` and `P/A/B/C` pass; `P/AB`, `P`, `Q/A` and
+    `None` → `NOT_ALLOWED` with both paths in the message; with no limit every path passes; a
+    write call on a saved fake document in `P/X` under limit `P/A` → `NOT_ALLOWED` with no text
+    command and the function not called; in `P/A/B` it runs; a never-saved document under a limit
+    runs; one whose `dataFile` has a local-path `id` or raises → `NOT_ALLOWED` with the function not
+    called; a read action on a document in `P/X` runs.
+- **REQ-CORE-055**: `INSTRUCTIONS` shall end with the three § 3.2 sentences on bulk entries,
+  read-only handling and the folder limit, and README.md shall document bulk entries,
+  auto-unlock with `preserve_read_only`, save locking, the folder limit (`?folder=`, config
+  `folder`, installer `--folder`) and the error codes (§ 3.2, § 5.12, § 5.13, § 6.4, § 9).
+  - _Acceptance_: A unit test asserts `INSTRUCTIONS` contains each of the three sentences verbatim;
+    README.md has sections `Bulk entries`, `Read-only documents` and `Folder limit` naming
+    `preserve_read_only`, `READ_ONLY`, `READ_ONLY_NOT_APPLIED`, `?folder=`, `folder =` and
+    `--folder`.
 
 ## Non-Functional Requirements
 - **NFR-CORE-001**: The server shall bind only to 127.0.0.1; `script` actions shall be excluded by

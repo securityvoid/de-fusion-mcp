@@ -57,6 +57,11 @@ def live(tmp_path, monkeypatch, registry, fake_design, fake_app):
         """Peek."""
         return {"bodies": len(list(ctx.component().bRepBodies))}
 
+    @action("model", access="write", edits_document="none")
+    def limit(ctx) -> dict:
+        """The session's folder limit."""
+        return {"folder_limit": ctx.folder_limit}
+
     @action("model", access="write")
     def make(ctx) -> dict:
         """Make."""
@@ -198,6 +203,25 @@ def test_help_lists_flags_and_exit_codes(capsys):
     assert e.value.code == 0
     out = capsys.readouterr().out
     assert all(x in out for x in ("--profile", "--port", "--only", "DEFUSION_TOKEN", "1 any failure", "2 server unreachable"))
+    assert "config folder unset" in out
+
+
+def test_open_session_folder_sends_encoded_query(live, monkeypatch):
+    urls = []
+    real = live_check.streamable_http_client
+
+    def spy(url, **kw):
+        urls.append(url)
+        return real(url, **kw)
+
+    monkeypatch.setattr(live_check, "streamable_http_client", spy)
+
+    async def go():
+        async with live_check.open_session(folder="P/A") as s:
+            return await live_check.call(s, "model", "limit", {})
+
+    env = asyncio.run(go())
+    assert urls[0].endswith("/mcp?folder=P%2FA") and env["result"]["folder_limit"] == "P/A"
 
 
 def test_open_session_readonly_lists_only_read_actions(live):
@@ -229,13 +253,15 @@ def test_freeze_leftovers_fixes_only_editable_live_files(monkeypatch, capsys):
     calls = []
 
     async def fake_call(session, tool, action, params, units=None):
-        calls.append((action, params.get("file") or params.get("document")))
+        calls.append((action, (params.get("files") or params.get("documents") or [params.get("file")])[0]))
         res = {"list_projects": {"items": [{"name": "AI Test", "active": True}]},
                "list_folders": {"items": [{"kind": "file", "id": k, "name": n, "path": "AI Test/" + n}
                                           for k, (n, _) in files.items()],
                              "next_offset": None},
                "datafile_get": {"read_only": files.get(params.get("file"), ("", True))[1]},
                "open": {"id": "doc"}, "set_read_only": {}, "close": {}}[action]
+        if action in ("open", "set_read_only", "close"):
+            res = {"results": [{"input": None, "ok": True, "result": res}], "ok": 1, "failed": 0}
         return {"ok": True, "result": res}
 
     monkeypatch.setattr(live_check, "call", fake_call)
@@ -258,3 +284,26 @@ def test_freeze_leftovers_reports_failed_fix(monkeypatch, capsys):
     monkeypatch.setattr(live_check, "call", fake_call)
     assert asyncio.run(live_check.freeze_leftovers(None)) is False
     assert capsys.readouterr().out.startswith("FAIL editable leftover")
+
+
+def _list(result, ok=True):
+    entry = {"input": None, "ok": ok, "result": result} if ok else {"input": None, "ok": False, "error": {"code": "X"}}
+    return {"results": [entry], "ok": int(ok), "failed": int(not ok)}
+
+
+def test_freeze_entry_failure_prints_fail_and_exits_1(live, monkeypatch, capsys):
+    real = live_check.call
+    fakes = {"list_projects": {"items": [{"name": "P", "active": True}]},
+             "list_folders": {"items": [{"kind": "file", "id": "a", "name": "defusion-live-9", "path": "P/defusion-live-9"}],
+                              "next_offset": None},
+             "datafile_get": {"read_only": False},
+             "open": _list({"id": "doc"}), "set_read_only": _list(None, ok=False), "close": _list({})}
+
+    async def fake_call(session, tool, action, params, units=None):
+        if tool == "document" and action in fakes:
+            return {"ok": True, "result": fakes[action]}
+        return await real(session, tool, action, params, units)
+
+    monkeypatch.setattr(live_check, "call", fake_call)
+    assert live_check.main(["--only", "other"]) == 1
+    assert "FAIL editable leftover P/defusion-live-9" in capsys.readouterr().out

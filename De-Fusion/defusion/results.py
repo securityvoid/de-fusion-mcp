@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from mcp.types import CallToolResult, ImageContent, TextContent
 
-from .context import page  # noqa: F401  (ctx.page and results.page are the same function)
+from .context import BulkResult, page  # noqa: F401  (ctx.page and results.page are the same function)
 from .errors import RESULT_TOO_LARGE, ActionError, from_exception
 
 MAX_RESULT_BYTES = 65536
@@ -45,6 +45,12 @@ def _json_result(raw):
 def check_result(raw):
     """Raise RESULT_TOO_LARGE if the JSON result exceeds 64 KiB or the images total over 4 MiB."""
     size = len(dumps(_json_result(raw)).encode("utf-8"))
+    if size > MAX_RESULT_BYTES and isinstance(raw, BulkResult):
+        raise ActionError(
+            RESULT_TOO_LARGE,
+            "all entries ran; the result is %d bytes and the limit is %d" % (size, MAX_RESULT_BYTES),
+            hints=["check state with document.list_open or datafile_get", "send fewer entries per call"],
+        )
     if size > MAX_RESULT_BYTES:
         raise ActionError(
             RESULT_TOO_LARGE,
@@ -60,18 +66,23 @@ def check_result(raw):
         )
 
 
-def ok_envelope(tool, action, result, units, changes=None, undo_grouped=True):
+def ok_envelope(tool, action, result, units, changes=None, undo_grouped=True, made_editable=None):
     env = {"ok": True, "tool": tool, "action": action, "result": result, "units": units}
     if changes is not None:
         env["changes"] = changes
     if undo_grouped is False:
         env["undo_grouped"] = False
+    if made_editable:
+        env["made_editable"] = list(made_editable)
     return env
 
 
-def error_envelope(tool, action, exc):
+def error_envelope(tool, action, exc, made_editable=None):
     err = from_exception(exc)
-    return {"ok": False, "tool": tool, "action": action, "error": err.to_dict()}
+    env = {"ok": False, "tool": tool, "action": action, "error": err.to_dict()}
+    if made_editable:
+        env["made_editable"] = list(made_editable)
+    return env
 
 
 def to_call_result(envelope, images=()):
@@ -86,18 +97,18 @@ def to_call_result(envelope, images=()):
     )
 
 
-def shape(tool, action, raw, units, changes=None, undo_grouped=True):
+def shape(tool, action, raw, units, changes=None, undo_grouped=True, made_editable=None):
     """§ 5.3 step 7: size-check a raw action result and build the CallToolResult."""
     try:
         check_result(raw)
     except ActionError as exc:
-        return to_call_result(error_envelope(tool, action, exc))
-    env = ok_envelope(tool, action, _json_result(raw), units, changes, undo_grouped)
+        return to_call_result(error_envelope(tool, action, exc, made_editable))
+    env = ok_envelope(tool, action, _json_result(raw), units, changes, undo_grouped, made_editable)
     return to_call_result(env, _images(raw))
 
 
-def error_result(tool, action, exc):
-    return to_call_result(error_envelope(tool, action, exc))
+def error_result(tool, action, exc, made_editable=None):
+    return to_call_result(error_envelope(tool, action, exc, made_editable))
 
 
 # --- change summary -------------------------------------------------------------------------

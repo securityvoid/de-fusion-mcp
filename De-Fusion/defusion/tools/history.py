@@ -1308,7 +1308,7 @@ async def _round_trip(session, build):
         try:
             got = await _stats(session)
         finally:
-            await _lc().call(session, "document", "close", {"document": doc, "confirm": True})
+            await _lc().call(session, "document", "close", {"documents": [doc], "confirm": True})
         assert got[0] == want[0], (got, want)
         assert abs(got[1] - want[1]) <= 1e-6 * max(1.0, abs(want[1])), (got, want)
         for a, b in ((got[2], want[2]), (got[3], want[3])):
@@ -1360,7 +1360,7 @@ async def _apply_recipe_step(session):
             await _err(session, "apply_recipe_step", {"step": {"kind": "unknown", "type": "X", "name": "x", "parameters": {}, "reason": "r"}},
                        "INVALID_PARAMS")
         finally:
-            await _lc().call(session, "document", "close", {"document": doc, "confirm": True})
+            await _lc().call(session, "document", "close", {"documents": [doc], "confirm": True})
 
 
 def _coil_scenario(coil_type, **kw):

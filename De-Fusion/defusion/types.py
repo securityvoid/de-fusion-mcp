@@ -14,6 +14,7 @@ from pydantic import (
     AfterValidator,
     BaseModel,
     BeforeValidator,
+    Field,
     StringConstraints,
     WithJsonSchema,
 )
@@ -218,6 +219,13 @@ def _file_name(s):
 FileName = Annotated[
     str, StringConstraints(min_length=1, max_length=64), AfterValidator(_file_name)
 ]
+
+
+
+def bulk(t):
+    """A bulk-entry list parameter of ``t`` entries: 1 to 50 of them (design § 5.12)."""
+    return Annotated[list[t], Field(min_length=1, max_length=50)]
+
 
 Operation = Literal["new_body", "join", "cut", "intersect", "new_component"]
 

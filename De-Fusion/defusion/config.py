@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import profiles, units
+from .guard import norm_folder
 
 log = logging.getLogger("defusion")
 
@@ -20,6 +21,7 @@ port = 8642                      # 127.0.0.1 only
 # token = "..."                  # optional; see § 7
 log_level = "INFO"
 default_profile = ["all", "-script"]
+# folder = "My Project/Parts"    # optional default folder limit; see § 6.4
 
 [units]
 length = "mm"                    # default for bare numbers in and for outputs
@@ -47,6 +49,7 @@ class Config:
     default_profile: list = field(default_factory=lambda: list(DEFAULT_PROFILE))
     units: dict = field(default_factory=lambda: {"length": "mm", "angle": "deg"})
     profiles: dict = field(default_factory=dict)
+    folder: str | None = None  # normalised default folder limit (§ 6.4)
 
 
 _state = {"config": Config(), "error": None}
@@ -82,7 +85,7 @@ def _parse(data):
     """Validate a parsed TOML table; returns (Config, [errors])."""
     errors = []
     cfg = Config()
-    known = {"port", "token", "log_level", "default_profile", "units", "profiles"}
+    known = {"port", "token", "log_level", "default_profile", "folder", "units", "profiles"}
     for key in data:
         if key not in known:
             errors.append("unknown key '%s'" % key)
@@ -108,6 +111,13 @@ def _parse(data):
         v = _items(data["default_profile"], "default_profile", errors)
         if v is not None:
             cfg.default_profile = v
+    if "folder" in data:
+        v = data["folder"]
+        folder = norm_folder(v) if isinstance(v, str) else None
+        if folder:
+            cfg.folder = folder
+        else:
+            errors.append("config folder '%s': needs a project-qualified path like Project/Folder" % v)
     if "units" in data:
         u = data["units"]
         if not isinstance(u, dict):

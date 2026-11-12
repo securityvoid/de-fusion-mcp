@@ -2,7 +2,7 @@ import pytest
 
 from defusion import config, profiles
 from defusion.actions import action
-from defusion.profiles import BUILTIN, InvalidProfile, merge, parse_query, resolve
+from defusion.profiles import BUILTIN, InvalidFolder, InvalidProfile, merge, parse_query, resolve
 
 
 @pytest.fixture
@@ -137,11 +137,12 @@ def test_blank_item_in_list():
 
 
 def test_parse_query():
-    assert parse_query("") is None and parse_query(None) is None and parse_query("x=1") is None
-    assert parse_query("profile=3dprinting,readonly") == ["3dprinting", "readonly"]
-    assert parse_query("profile=3dprinting%2Creadonly&x=1") == ["3dprinting", "readonly"]
-    assert parse_query("profile=-model.coil") == ["-model.coil"]
-    assert parse_query("profile=a%2C%20b") == ["a", "b"]
+    assert parse_query("") == (None, None) and parse_query(None) == (None, None)
+    assert parse_query("x=1") == (None, None)
+    assert parse_query("profile=3dprinting,readonly") == (["3dprinting", "readonly"], None)
+    assert parse_query("profile=3dprinting%2Creadonly&x=1") == (["3dprinting", "readonly"], None)
+    assert parse_query("profile=-model.coil") == (["-model.coil"], None)
+    assert parse_query("profile=a%2C%20b") == (["a", "b"], None)
     for qs in ["profile=", "profile=%20", "profile=a,,b", "profile=a,", "profile=,a", "profile=a&profile=b",
                "profile=a&profile=a", "profile"]:
         with pytest.raises(InvalidProfile):
@@ -163,3 +164,27 @@ def test_config_rejects_bad_profiles_and_default_profile(tmp_path, monkeypatch):
     assert config.load()[1] is None
     (tmp_path / "config.toml").unlink()
     config.load()
+
+
+@pytest.mark.parametrize("qs,folder", [
+    ("folder=P%2FA", "P/A"), ("folder=%2FP%2FA%2F", "P/A"), ("folder=My%20Project%2FParts", "My Project/Parts"),
+    ("folder=P", "P"), ("folder=%20P%2F%2FA%20", "P/A"),
+])
+def test_parse_query_folder(qs, folder):
+    assert parse_query(qs) == (None, folder)
+
+
+def test_parse_query_folder_and_profile():
+    assert parse_query("folder=P%2FA&profile=readonly") == (["readonly"], "P/A")
+
+
+@pytest.mark.parametrize("qs,value,reason", [
+    ("folder=", "", "folder is empty"), ("folder=%20%2F%20", " / ", "folder is empty"), ("folder", "", "folder is empty"),
+    ("folder=a&folder=b", "folder=a&folder=b", "folder may be given only once"),
+    ("folder=a&folder=a", "folder=a&folder=a", "folder may be given only once"),
+])
+def test_parse_query_invalid_folder(qs, value, reason):
+    with pytest.raises(InvalidFolder) as e:
+        parse_query(qs)
+    assert (e.value.value, e.value.reason) == (value, reason)
+    assert str(e.value) == "invalid folder '%s': %s; use ?folder=<Project>/<Folder> (URL-encoded)" % (value, reason)

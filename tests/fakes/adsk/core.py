@@ -9,12 +9,14 @@ import threading
 
 CALLS: list[tuple[str, int]] = []
 FIRE_THREADS: list[int] = []
+DO_EVENTS: list[int] = []  # one entry per adsk.doEvents() call
 _tokens = itertools.count(1)
 
 
 def reset_calls():
     CALLS.clear()
     FIRE_THREADS.clear()
+    DO_EVENTS.clear()
 
 
 def calling_threads() -> set[int]:
@@ -396,6 +398,12 @@ class MeasureManager(_Fake):
         return self._out(self.angle)
 
 
+_READ_ONLY_COMMANDS = {
+    "Commands.Start ActiveDocumentDeactivateCommand": True,  # Make Read-Only
+    "Commands.Start ActiveDocumentActivateCommand": False,  # Make Editable
+}
+
+
 class Application(_Fake):
     """Fake application. A background thread plays Fusion's main thread: it delivers
     fired custom events to registered handlers. ``hold()``/``release()`` pause it."""
@@ -411,6 +419,9 @@ class Application(_Fake):
         self.commands: list[str] = []
         self.text_command_errors: dict[str, Exception] = {}
         self.text_command_results: dict[str, str] = {}
+        # Make Read-Only / Make Editable reach the active document's cloud DataFile after this many
+        # findFileById reads (0 = at once, None = never).
+        self.read_only_reads = 0
         self.logs: list[str] = []
         self._events: dict[str, CustomEvent] = {}
         self._queue: queue.Queue = queue.Queue()
@@ -454,8 +465,20 @@ class Application(_Fake):
         for key, exc in self.text_command_errors.items():
             if key in cmd:
                 raise exc
+        if cmd in _READ_ONLY_COMMANDS:
+            self._read_only_command(_READ_ONLY_COMMANDS[cmd])
         r = self.text_command_results.get(cmd, "")
         return r() if callable(r) else r
+
+    def _read_only_command(self, want):
+        doc = self.activeDocument
+        df = getattr(doc, "dataFile", None)
+        if df is None or self.read_only_reads is None:
+            return
+        if self.read_only_reads == 0:
+            df.isReadOnly = want
+        else:
+            self.data._pending_read_only = [df, want, self.read_only_reads]
 
     def registerCustomEvent(self, event_id):
         if event_id in self._events:
@@ -776,6 +799,8 @@ class Data(_Fake):
     def __init__(self):
         self._hubs, self._files, self._folders, self._n = [], {}, {}, 0
         self.activeHub = self.activeProject = None
+        self._pending_read_only = None  # [DataFile, isReadOnly value, reads left] (Application)
+        self.find_file_reads = 0
 
     dataHubs = property(lambda s: Collection(s._hubs))
 
@@ -791,6 +816,13 @@ class Data(_Fake):
         return h
 
     def findFileById(self, id):
+        self.find_file_reads += 1
+        pending = self._pending_read_only
+        if pending is not None:
+            pending[2] -= 1
+            if pending[2] <= 0:
+                pending[0].isReadOnly = pending[1]
+                self._pending_read_only = None
         return self._files.get(id)
 
     def findFolderById(self, id):

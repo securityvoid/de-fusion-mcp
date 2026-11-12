@@ -214,3 +214,32 @@ def test_allowed_set_and_items_reach_the_action(acts, harness):
     call(h, "model", "probe", "?profile=readonly,-server.status")
     assert seen["allowed"] == {"model.list", "model.probe", "server.status", "server.job_status"}
     assert seen["items"] == ["-write", "-destructive", "-server.status"]
+
+
+def test_cache_hit_returns_allowed_items_and_folder(acts, monkeypatch):
+    prof = server._Profiles(Config(folder="Cfg"), acts, None)
+    n = []
+    real = profiles.resolve
+    monkeypatch.setattr(profiles, "resolve", lambda *a: n.append(1) or real(*a))
+    first = prof.for_query("folder=P%2FA&profile=readonly")
+    second = prof.for_query("folder=P%2FA&profile=readonly")
+    assert len(n) == 1 and second is first
+    allowed, items, folder = second
+    assert "model.list" in allowed and "model.extrude" not in allowed
+    assert items == ["-write", "-destructive"] and folder == "P/A"
+    assert prof.for_query("")[2] == "Cfg"  # no folder key: the config default
+
+
+@pytest.mark.parametrize("query,value,reason", [
+    ("?folder=", "", "folder is empty"),
+    ("?folder=a&folder=b", "folder=a&folder=b", "folder may be given only once"),
+])
+def test_invalid_folder_fails_every_request(harness, query, value, reason):
+    h = harness()
+    for fn in (lambda cs: cs.list_tools(), lambda cs: cs.call_tool("model", {"action": "list"})):
+        with pytest.raises(MCPError) as e:
+            h.run(fn, query)
+        assert e.value.code == -32602
+        assert e.value.message == (
+            "invalid folder '%s': %s; use ?folder=<Project>/<Folder> (URL-encoded)" % (value, reason)
+        )

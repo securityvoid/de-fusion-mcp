@@ -13,7 +13,7 @@ from typing import Annotated, Any, Callable, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError, create_model
 
-from . import dispatch, results, types
+from . import dispatch, guard, results, types
 from .context import Ctx
 from .errors import (
     CONFIRM_REQUIRED,
@@ -29,6 +29,7 @@ log = logging.getLogger("defusion")
 
 TOOLS = ("document", "sketch", "model", "assembly", "history", "inspect", "view", "cam", "script", "server")
 ACCESS = ("read", "write", "destructive")
+EDITS_DOCUMENT = ("active", "action", "none")
 _SNAKE = re.compile(r"^[a-z][a-z0-9_]*$")
 _REQUIRED = object()
 
@@ -49,7 +50,8 @@ class Action:
     summary: str
     help: str
     model: type  # pydantic model of the parameters (extra="forbid")
-    params: tuple  # parameter names after ctx (plus "confirm" for destructive actions)
+    params: tuple  # parameter names after ctx (plus "confirm" / "preserve_read_only" when added)
+    edits_document: str = "none"  # "active", "action" or "none" (§ 5.1, § 5.13)
 
     @property
     def key(self):
@@ -147,7 +149,8 @@ def _module_summary(fn):
     return doc.splitlines()[0].strip() if doc else None
 
 
-def action(tool, name=None, access=_REQUIRED, timeout=30, undo_group=True, main_thread=True):
+def action(tool, name=None, access=_REQUIRED, timeout=30, undo_group=True, main_thread=True,
+           edits_document=None):
     """Register a function as the action ``tool.name``. See design § 5.1."""
     if tool not in TOOLS:
         raise ActionDefinitionError("unknown tool %r; tools are %s" % (tool, " ".join(TOOLS)))
@@ -155,6 +158,17 @@ def action(tool, name=None, access=_REQUIRED, timeout=30, undo_group=True, main_
         raise ActionDefinitionError("access must be one of %s, got %r" % (" ".join(ACCESS), access))
     if not main_thread and access != "read":
         raise ActionDefinitionError("main_thread=False is only allowed on read actions")
+    if edits_document is None:
+        edits_document = "none" if access == "read" else "active"
+    if edits_document not in EDITS_DOCUMENT:
+        raise ActionDefinitionError(
+            "edits_document must be one of %s, got %r" % (" ".join(EDITS_DOCUMENT), edits_document)
+        )
+    if edits_document != "none" and access == "read":  # main_thread=False actions are read (above)
+        raise ActionDefinitionError(
+            "edits_document=%r is not allowed on read or main_thread=False actions" % edits_document
+        )
+    guarded = edits_document != "none"
 
     def decorate(fn):
         aname = name or fn.__name__
@@ -183,16 +197,20 @@ def action(tool, name=None, access=_REQUIRED, timeout=30, undo_group=True, main_
                 raise ActionDefinitionError("%s: main_thread=False actions cannot take Ref types" % pw)
             if p.name == "confirm" and access == "destructive":
                 raise ActionDefinitionError("%s: 'confirm' is added by the framework" % pw)
+            if p.name == "preserve_read_only" and guarded:
+                raise ActionDefinitionError("%s: 'preserve_read_only' is added by the framework" % pw)
             fields[p.name] = (hints[p.name], ... if p.default is p.empty else p.default)
         if access == "destructive":
             fields["confirm"] = (bool, False)
+        if guarded:
+            fields["preserve_read_only"] = (bool, False)
         model = create_model(
             "%s_%s_params" % (tool, aname), __config__=ConfigDict(extra="forbid"), **fields
         )
         act = Action(
             tool=tool, name=aname, fn=fn, access=access, timeout=timeout, undo_group=undo_group,
             main_thread=main_thread, summary=doc.splitlines()[0].strip(), help=doc, model=model,
-            params=tuple(fields),
+            params=tuple(fields), edits_document=edits_document,
         )
         _registry.add(act, _module_summary(fn))
         return fn
@@ -302,6 +320,20 @@ class _Outcome:
     result: Any
     changes: Any
     undo_grouped: bool
+    made_editable: list
+
+
+def _strip(kwargs):
+    """Drop the framework-added ``confirm`` and ``preserve_read_only``; return the latter."""
+    kwargs.pop("confirm", None)
+    return bool(kwargs.pop("preserve_read_only", False))
+
+
+def _kwargs(ctx, act, validated):
+    """Resolve the params (§ 5.4) and take the framework-added ones out of the function's kwargs."""
+    kwargs = types.resolve_params(ctx, act, validated)
+    ctx.preserve_read_only = _strip(kwargs)
+    return kwargs
 
 
 def _validate(act, params):
@@ -347,13 +379,23 @@ def _transaction(ctx, command):
     ctx.app.executeTextCommand(command)
 
 
-def _run_on_main_thread(act, validated, allowed, profile_items, output_units):
-    """The closure dispatched to Fusion's main thread (§ 5.3 step 6)."""
+def _run_on_main_thread(act, validated, allowed, profile_items, output_units, folder_limit):
+    """The closure dispatched to Fusion's main thread (§ 5.3 step 6). An exception leaving it
+    carries the names the call made editable as ``made_editable`` (§ 5.5)."""
     import adsk.core
 
-    ctx = Ctx.for_app(adsk.core.Application.get(), allowed, profile_items, output_units)
-    kwargs = types.resolve_params(ctx, act, validated)
-    kwargs.pop("confirm", None)
+    ctx = Ctx.for_app(adsk.core.Application.get(), allowed, profile_items, output_units, folder_limit)
+    try:
+        return _run_guarded(ctx, act, validated, output_units)
+    except Exception as exc:
+        exc.made_editable = list(ctx.made_editable)
+        raise
+
+
+def _run_guarded(ctx, act, validated, output_units):
+    kwargs = _kwargs(ctx, act, validated)
+    if act.edits_document == "active" and ctx.document is not None:
+        guard.ensure_editable(ctx, ctx.document)
     writes = act.access != "read"
     before = results.snapshot(ctx.design, output_units) if writes and ctx.design is not None else None
     grouped = writes and act.undo_group and ctx.document is not None
@@ -388,10 +430,10 @@ def _run_on_main_thread(act, validated, allowed, profile_items, output_units):
                 changes = results.diff(before, results.snapshot(ctx.design, output_units))
             except RuntimeError:  # the action closed the document, so its design no longer exists
                 pass
-    return _Outcome(result, changes, undo_grouped)
+    return _Outcome(result, changes, undo_grouped, list(ctx.made_editable))
 
 
-def _call(tool, args, allowed, profile_items, default_units, note):
+def _call(tool, args, allowed, profile_items, default_units, note, folder_limit):
     action_name = args.get("action")
     if not isinstance(action_name, str):
         raise ActionError(INVALID_PARAMS, "action must be a string")
@@ -411,38 +453,39 @@ def _call(tool, args, allowed, profile_items, default_units, note):
     params = args.get("params")
     validated = _validate(act, {} if params is None else params)
     if not act.main_thread:
-        ctx = Ctx.offline(allowed, profile_items, out)
-        kwargs = types.resolve_params(ctx, act, validated)
-        kwargs.pop("confirm", None)
+        ctx = Ctx.offline(allowed, profile_items, out, folder_limit)
+        kwargs = _kwargs(ctx, act, validated)
         return results.shape(tool, action_name, act.fn(ctx, **kwargs), out.as_dict())
     outcome = dispatch.run(
-        lambda: _run_on_main_thread(act, validated, allowed, profile_items, out),
+        lambda: _run_on_main_thread(act, validated, allowed, profile_items, out, folder_limit),
         act.timeout,
         label=act.key,
         job_value=lambda o: o.result,
     )
     if isinstance(outcome, _Outcome):
         return results.shape(
-            tool, action_name, outcome.result, out.as_dict(), outcome.changes, outcome.undo_grouped
+            tool, action_name, outcome.result, out.as_dict(), outcome.changes, outcome.undo_grouped,
+            outcome.made_editable,
         )
     return results.shape(tool, action_name, outcome, out.as_dict())  # {"status": "running", ...}
 
 
-def call(tool, args, allowed, profile_items, output_units=None, *, denied_note=None):
+def call(tool, args, allowed, profile_items, output_units=None, folder_limit=None, *, denied_note=None):
     """Run ``tools/call`` of ``tool`` with ``args = {action, params, units}``; returns a CallToolResult.
 
     ``allowed`` is the request's set of "tool.action"; ``output_units`` the configured default
-    OutputUnits; ``denied_note`` is appended to a NOT_ALLOWED message (config error text)."""
+    OutputUnits; ``folder_limit`` the request's normalised folder limit (§ 6.4) or None;
+    ``denied_note`` is appended to a NOT_ALLOWED message (config error text)."""
     started = time.monotonic()
     default_units = output_units or OutputUnits.for_call()
     action_name = args.get("action") if isinstance(args, dict) else None
     try:
-        result = _call(tool, args, allowed, profile_items, default_units, denied_note)
+        result = _call(tool, args, allowed, profile_items, default_units, denied_note, folder_limit)
         outcome = "ok" if not result.is_error else result.structured_content["error"]["code"]
     except Exception as exc:
         err = from_exception(exc)
         outcome = err.code
-        result = results.error_result(tool, str(action_name), err)
+        result = results.error_result(tool, str(action_name), err, getattr(exc, "made_editable", None))
         if err.code == "FUSION_ERROR":
             log.exception("%s.%s raised", tool, action_name)
     log.info(
@@ -455,9 +498,10 @@ def call(tool, args, allowed, profile_items, output_units=None, *, denied_note=N
 def call_inline(ctx, tool, action_name, params):
     """Run another registered action inside the current main-thread call (§ 5.11).
 
-    Opens no undo group, takes no change snapshot and does not dispatch; returns the raw result."""
+    Opens no undo group, takes no change snapshot, does not dispatch and runs no document guard
+    (an inner ``preserve_read_only`` is validated and dropped); returns the raw result."""
     act = _lookup(tool, action_name, ctx.allowed)
     validated = _validate(act, params)
     kwargs = types.resolve_params(ctx, act, validated)
-    kwargs.pop("confirm", None)
+    _strip(kwargs)
     return act.fn(ctx, **kwargs)

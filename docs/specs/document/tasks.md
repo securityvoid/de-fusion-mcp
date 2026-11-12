@@ -11,7 +11,7 @@ are to `docs/specs/document/design.md`.
   - Add the § 10.1 fake classes and enums to `tests/fakes/adsk/core.py` and
     `tests/fakes/adsk/fusion.py` (append; do not change existing fakes' behaviour).
   - Create `De-Fusion/defusion/tools/document.py` with the module docstring of § 1, the § 2 helpers
-    (`_doc`, `_folder`, `_file`, `_hub`, `_folder_path`, `_file_path`, `_file_ref`, `_doc_summary`,
+    (`_doc`, `_folder`, `_file`, `_hub`, `_file_path`, `_file_ref`, `_doc_summary`,
     `_folder_summary`, `_file_summary`, `_file_props`, `_need`, `_abs_path`), an empty
     `LIVE_SCENARIOS = []`. Tests import the module directly; it joins `defusion/tools/__init__.py`
     in TASK-DOC-002 (core rejects a tool module that registers no action).
@@ -88,3 +88,63 @@ are to `docs/specs/document/design.md`.
   - _Output_: `De-Fusion/defusion/tools/document.py`
   - _Reuse_: `scripts/live_check.py`, `server.restart_addin`, `live_check.box` (core design § 10).
   - _Verify_: `python scripts/live_check.py --only document.export && python scripts/live_check.py --only document.import && python scripts/live_check.py --only document.import_mesh && python scripts/live_check.py --only document && pytest -q tests/test_document.py`
+
+## Phase 4 — List entries, read-only guard, folder limit
+- [x] **TASK-DOC-011** [REQ-DOC-023, REQ-DOC-026, REQ-DOC-027, REQ-DOC-006, REQ-DOC-008, REQ-DOC-015, REQ-DOC-016, REQ-DOC-017, REQ-DOC-018, REQ-DOC-019, REQ-DOC-020]: List parameters and `edits_document`
+  - Waits on TASK-CORE-026 (`bulk`, `ctx.bulk`) and TASK-CORE-027 (`edits_document`,
+    `guard.ensure_editable`, `guard.folder_path`).
+  - `document.py`: `SaveAsEntry`, `RenameEntry`; the § 2.7 list parameter on `export`, `open`,
+    `close`, `datafile_set`, `datafile_refresh`, `datafile_copy`, `datafile_move`,
+    `datafile_delete`, `import`, `import_mesh` (each per-entry function returns the single-entry
+    result of its design section; shared parameters resolved once before `ctx.bulk`); the § 3 `edits_document` on every
+    action; `guard.ensure_editable` in `advance_to_latest`, `update_all_references` and `import`
+    `active` (§ 6.7, § 6.11); `guard.folder_path` for folder paths (§ 2.2); docstrings
+    per § 2.7 (REQ-DOC-027). (`save`, `save_as`, `set_read_only` follow in TASK-DOC-012.)
+  - `tests/test_document.py`: convert every existing call of these actions to the list form; add
+    the § 10.1 list cases for these ten actions, the `edits_document` registry check, the
+    `ensure_editable` cases of `advance_to_latest`/`import`, and the `help` text check; for each of
+    the 13 list actions the old singular parameter gives `INVALID_PARAMS` whose hints carry the action's
+    parameter schema.
+  - _Output_: `De-Fusion/defusion/tools/document.py`, `tests/test_document.py`
+  - _Reuse_: `types.bulk`, `ctx.bulk`, `guard.ensure_editable`, `guard.folder_path` (core § 5.12,
+    § 5.13); the existing per-action bodies become the per-entry functions.
+  - _Verify_: `pytest -q tests/test_document.py`
+- [x] **TASK-DOC-012** [REQ-DOC-024, REQ-DOC-014, REQ-DOC-010, REQ-DOC-011, REQ-DOC-023, REQ-DOC-026]: Save locking and `set_read_only` through core
+  - Waits on TASK-DOC-011, TASK-CORE-027 and TASK-CORE-028.
+  - `save` (§ 6.4), `save_as` (§ 6.5; folder default from `ctx.folder_limit`, duplicate-name
+    check, lookup by name) and `set_read_only` (§ 6.8) as list actions using `guard.saved_file`,
+    `guard.set_read_only` and `guard.ensure_editable` (`save`), with `read_only` on `save`/`save_as`.
+  - `tests/test_document.py`: every case of design § 10.1 for save/save_as/set_read_only (core
+    `guard.VERIFY_DELAY` monkeypatched to 0); the `help` text of `set_read_only` states the
+    per-entry worst case.
+  - _Output_: `De-Fusion/defusion/tools/document.py`, `tests/test_document.py`
+  - _Reuse_: core `guard.set_read_only`, `guard.saved_file`, `guard.ensure_editable`
+    (TASK-CORE-027); the TASK-CORE-027 read-only fakes.
+  - _Verify_: `pytest -q tests/test_document.py -k "save or read_only"`
+- [x] **TASK-DOC-013** [REQ-DOC-025]: Folder limit
+  - Waits on TASK-CORE-028 (`ctx.folder_limit` from the request).
+  - `_folder`/`_file` end with `guard.check_folder(ctx, ...)` (§ 2.2); `set_read_only` checks the file's
+    folder (§ 6.8); `save_as` folder default (§ 6.5).
+  - `tests/test_document.py`: every case of design § 10.1 for the folder limit, calling
+    `actions.call(..., folder_limit="P/A")` against fake folders `P`, `P/A`, `P/A/B`, `P/X`.
+  - _Output_: `De-Fusion/defusion/tools/document.py`, `tests/test_document.py`
+  - _Reuse_: `guard.check_folder` (TASK-CORE-027), § 2.2 helpers.
+  - _Verify_: `pytest -q tests/test_document.py -k folder && pytest -q`
+- [x] **TASK-DOC-014** [REQ-DOC-023, REQ-DOC-024, REQ-DOC-025, REQ-DOC-026, REQ-DOC-014]: Live scenarios and callers
+  - Waits on TASK-DOC-011..013 and TASK-CORE-030 (`open_session(folder=)`, list-form freeze step).
+  - `document.py` `LIVE_SCENARIOS`: every existing scenario uses the list forms (§ 10.2 note);
+    `set_read_only` row updated; add `bulk` (tag `document.open`), `save_locks` (`document.save`), `auto_unlock`
+    (`sketch.create`), `folder_limit` (`document.save_as`) (§ 10.2). A one-entry list call in a
+    scenario raises unless `results[0].ok` is true, except where the scenario expects an entry
+    error.
+    `_saved` keeps its `set_read_only` true before close (every saved Fusion document ends
+    read-only).
+  - Callers of the changed actions: `De-Fusion/defusion/tools/live_common.py` (`_fresh` close),
+    `De-Fusion/defusion/tools/history.py` (scenario closes), `De-Fusion/defusion/tools/inspect.py`
+    (`compare_meshes` export and import_mesh, reading `results[0]["result"]`).
+  - Reload the add-in (`server.restart_addin`) and run; fix code until all pass.
+  - _Output_: `De-Fusion/defusion/tools/document.py`, `De-Fusion/defusion/tools/live_common.py`,
+    `De-Fusion/defusion/tools/history.py`, `De-Fusion/defusion/tools/inspect.py`
+  - _Reuse_: `scripts/live_check.py` (`call`, `box`, `open_session`), existing `_saved`, `_freeze`,
+    `_uploaded`, `_gone` helpers.
+  - _Verify_: `python scripts/live_check.py --only document.open && python scripts/live_check.py --only document.save && python scripts/live_check.py --only sketch.create && python scripts/live_check.py --only document.save_as && python scripts/live_check.py --only document && python scripts/live_check.py --only inspect.compare_meshes && python scripts/live_check.py --profile full --only history && pytest -q`

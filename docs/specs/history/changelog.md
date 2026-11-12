@@ -7,3 +7,4 @@
 | 0.1.2 | 2026-11-10 | spec-consistency s1 r1 fixes (C1/C2/C3 findings) |
 | 0.1.3 | 2026-11-10 | spec-consistency s1 r2 and s2 r1 fixes (C1 r2, C4 findings) |
 | 0.2.0 | 2026-11-11 | Live corrections: undo via `Transaction.Undo`/`Transaction.Redo` text commands (§ 4.8, § 9.1; `UndoCommand.execute()` is a no-op), reorder `moved` read from the re-read index (§ 4.2) |
+| 0.2.1 | 2026-11-11 | Live scenarios close documents with `document.close {"documents": [...]}` (document 0.4.0 § 2.7) |

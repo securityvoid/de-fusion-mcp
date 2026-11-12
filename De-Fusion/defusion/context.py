@@ -1,5 +1,6 @@
 """Ctx: what every action receives (design § 5.9)."""
 import json
+import logging
 
 from . import types
 from .errors import (
@@ -9,9 +10,11 @@ from .errors import (
     UNSUPPORTED,
     WRONG_DESIGN_TYPE,
     ActionError,
+    from_exception,
 )
 
 ATTR_GROUP = "defusion"
+log = logging.getLogger("defusion")
 
 
 def page(seq, offset, limit, build=None):
@@ -33,11 +36,16 @@ def page(seq, offset, limit, build=None):
     }
 
 
+class BulkResult(dict):
+    """The ``{"results", "ok", "failed"}`` dict returned by ``Ctx.bulk``; the size budget gives it
+    its own RESULT_TOO_LARGE message (design § 5.12)."""
+
+
 class Ctx:
     """Fields and helpers for one action call. ``app``, ``ui``, ``document`` and ``design`` are
     ``None`` in a ``main_thread=False`` action (``Ctx.offline``)."""
 
-    def __init__(self, app, ui, document, design, allowed, profile_items, output_units):
+    def __init__(self, app, ui, document, design, allowed, profile_items, output_units, folder_limit=None):
         self.app = app
         self.ui = ui
         self.document = document
@@ -46,21 +54,24 @@ class Ctx:
         self.profile_items = list(profile_items)
         self.output = output_units
         self.units = output_units.as_dict()
+        self.folder_limit = folder_limit
+        self.preserve_read_only = False
+        self.made_editable = []
 
     @classmethod
-    def for_app(cls, app, allowed, profile_items, output_units):
+    def for_app(cls, app, allowed, profile_items, output_units, folder_limit=None):
         """Main-thread Ctx; ``design`` comes from the document's products, not ``app.activeProduct``."""
         import adsk.fusion
 
         document = app.activeDocument
         product = document.products.itemByProductType("DesignProductType") if document else None
         design = adsk.fusion.Design.cast(product) if product is not None else None
-        return cls(app, app.userInterface, document, design, allowed, profile_items, output_units)
+        return cls(app, app.userInterface, document, design, allowed, profile_items, output_units, folder_limit)
 
     @classmethod
-    def offline(cls, allowed, profile_items, units):
+    def offline(cls, allowed, profile_items, units, folder_limit=None):
         """Fusion-free Ctx for ``main_thread=False`` actions."""
-        return cls(None, None, None, None, allowed, profile_items, units)
+        return cls(None, None, None, None, allowed, profile_items, units, folder_limit)
 
     # --- design access ----------------------------------------------------------------------
     def require_design(self):
@@ -134,3 +145,18 @@ class Ctx:
 
     def fail(self, code, message, hints=()):
         raise ActionError(code, message, hints)
+
+    def bulk(self, entries, fn):
+        """Call ``fn(entry)`` for each entry in order; a failed entry never stops later ones (§ 5.12)."""
+        records, failed = [], 0
+        for entry in entries:
+            rec = {"input": entry.model_dump() if hasattr(entry, "model_dump") else entry}
+            try:
+                rec["ok"], rec["result"] = True, fn(entry)
+            except Exception as exc:
+                if not isinstance(exc, ActionError):
+                    log.warning("bulk entry %r raised", rec["input"], exc_info=True)
+                rec["ok"], rec["error"] = False, from_exception(exc).to_dict()
+                failed += 1
+            records.append(rec)
+        return BulkResult(results=records, ok=len(records) - failed, failed=failed)

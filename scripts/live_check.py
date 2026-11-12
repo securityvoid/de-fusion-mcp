@@ -1,6 +1,8 @@
 """Drive the running De-Fusion add-in over /mcp and run each tool set's live scenarios (design § 10).
 
     DEFUSION_TOKEN=... python scripts/live_check.py [--profile P] [--port N] [--only tool[.action]]
+
+A live run needs the config `folder` unset (scenarios save in the active project's root).
 """
 import argparse
 import asyncio
@@ -10,6 +12,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 ROOT = Path(__file__).resolve().parent.parent
 for _p in (ROOT / "De-Fusion", ROOT / "De-Fusion" / "lib"):  # lib last: only a fallback for missing packages
@@ -54,11 +57,12 @@ def _leaf(exc):
 
 
 @contextlib.asynccontextmanager
-async def open_session(profile=None):
-    """An initialized SDK ClientSession on the harness port and token, with ``?profile=`` when given."""
+async def open_session(profile=None, folder=None):
+    """An initialized SDK ClientSession on the harness port and token, with ``?profile=`` / ``?folder=`` when given."""
     port = _harness["port"] or default_port()
     headers = {"Authorization": "Bearer " + _harness["token"]} if _harness["token"] else {}
-    url = "http://127.0.0.1:%d/mcp%s" % (port, "?profile=" + profile if profile else "")
+    query = {k: v for k, v in (("profile", profile), ("folder", folder)) if v}
+    url = "http://127.0.0.1:%d/mcp%s" % (port, "?" + urlencode(query, quote_via=quote, safe="") if query else "")
     client = create_mcp_http_client(headers=headers)
     async with streamable_http_client(url, http_client=client) as (read, write, *_):
         async with ClientSession(read, write) as session:
@@ -114,6 +118,14 @@ def load_scenarios(only):
 LIVE_PREFIX = "defusion-live-"
 
 
+def _entry(env):
+    """``results[0].result`` of a one-entry list call when the envelope and the entry are ok, else None."""
+    if not env["ok"]:
+        return None
+    first = env["result"]["results"][0]
+    return first["result"] if first["ok"] else None
+
+
 async def freeze_leftovers(session):
     """Make every still-editable ``defusion-live-*`` file in the active project's root read-only; returns False on a failure."""
     env = await call(session, "document", "list_projects", {})
@@ -132,14 +144,15 @@ async def freeze_leftovers(session):
             props = await call(session, "document", "datafile_get", {"file": item["id"]})
             if not props["ok"] or props["result"]["read_only"]:
                 continue
-            opened = await call(session, "document", "open", {"file": item["id"]})
-            if opened["ok"]:
-                fixed = await call(session, "document", "set_read_only", {"read_only": True, "document": opened["result"]["id"]})
-                await call(session, "document", "close", {"document": opened["result"]["id"], "confirm": True})
-            else:
-                fixed = opened
-            print("%s editable leftover %s" % ("FIXED" if fixed["ok"] else "FAIL", item["path"]))
-            ok = ok and fixed["ok"]
+            fixed = False
+            opened = _entry(await call(session, "document", "open", {"files": [item["id"]]}))
+            if opened is not None:
+                doc = {"documents": [opened["id"]]}
+                fixed = _entry(await call(session, "document", "set_read_only", {"read_only": True, **doc})) is not None
+                closed = _entry(await call(session, "document", "close", {**doc, "confirm": True})) is not None
+                fixed = fixed and closed
+            print("%s editable leftover %s" % ("FIXED" if fixed else "FAIL", item["path"]))
+            ok = ok and fixed
         offset = env["result"]["next_offset"]
     return ok
 
@@ -183,7 +196,9 @@ def main(argv=None):
         print("--token is not accepted; set the DEFUSION_TOKEN environment variable", file=sys.stderr)
         return 2
     ap = argparse.ArgumentParser(prog="live_check.py", description="Run De-Fusion live scenarios against the running add-in.",
-                                 epilog="The bearer token is read from the DEFUSION_TOKEN environment variable only.\n" + EXIT_CODES,
+                                 epilog="The bearer token is read from the DEFUSION_TOKEN environment variable only.\n"
+                                        "A live run needs the config folder unset (scenarios save in the active project's root).\n"
+                                        + EXIT_CODES,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--profile", help="profile of the scenario session (default: the server default)")
     ap.add_argument("--port", type=int, help="server port (default: the config port, 8642)")

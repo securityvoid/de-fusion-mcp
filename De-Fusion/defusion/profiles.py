@@ -4,6 +4,7 @@ from fnmatch import fnmatchcase
 from urllib.parse import parse_qs
 
 from .actions import ACCESS, TOOLS
+from .guard import norm_folder
 
 BUILTIN = {
     "full": ["all"],
@@ -21,6 +22,16 @@ class InvalidProfile(Exception):
     def __init__(self, item, reason):
         self.item, self.reason = item, reason
         super().__init__("invalid profile item '%s': %s; valid selectors are in design § 6.3" % (item, reason))
+
+
+class InvalidFolder(Exception):
+    """A bad ``?folder=`` value; handled like InvalidProfile (§ 6.4)."""
+
+    def __init__(self, value, reason):
+        self.value, self.reason = value, reason
+        super().__init__(
+            "invalid folder '%s': %s; use ?folder=<Project>/<Folder> (URL-encoded)" % (value, reason)
+        )
 
 
 def _is_builtin_selector(selector):
@@ -91,8 +102,24 @@ def _match(selector, actions):
 
 
 def parse_query(qs):
-    """Items from a raw query string's ``profile`` value, or None when there is no ``profile`` key."""
-    values = parse_qs(qs or "", keep_blank_values=True).get("profile")
+    """``(profile items | None, normalised folder | None)`` from a raw query string; None when the
+    key is absent. Raises InvalidProfile / InvalidFolder (§ 6.4)."""
+    query = parse_qs(qs or "", keep_blank_values=True)
+    return _profile_items(query.get("profile")), _folder(query.get("folder"))
+
+
+def _folder(values):
+    if values is None:
+        return None
+    if len(values) > 1:
+        raise InvalidFolder("folder=" + "&folder=".join(values), "folder may be given only once")
+    folder = norm_folder(values[0])
+    if not folder:
+        raise InvalidFolder(values[0], "folder is empty")
+    return folder
+
+
+def _profile_items(values):
     if values is None:
         return None
     if len(values) > 1:

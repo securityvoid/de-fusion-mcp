@@ -9,6 +9,9 @@ import, mesh import). All actions are `@action("document", ...)` functions in
 `De-Fusion/defusion/tools/document.py`; schema, validation, dispatch, results, errors, paging,
 help and profiles come from the core framework.
 
+Thirteen actions take lists (REQ-DOC-023). Acceptance criteria below that name one path, file or
+document for such an action mean a one-entry list and its `results[0]`.
+
 ## Operator ask
 2026-11-10: "comprehensive Fusion MCP server ... union of the four servers"
 
@@ -72,7 +75,7 @@ help and profiles come from the core framework.
     document returns `INVALID_PARAMS` with a hint to use `save_as`.
 - **REQ-DOC-011**: The document tool shall provide `save_as` (write), saving a document to a cloud
   folder under a given name (a core `FileName`).
-  - _Acceptance_: `save_as {"folder": "<project>", "name": "n"}` returns `saved: true` and a
+  - _Acceptance_: `save_as {"folder": "<project>", "documents": [{"name": "n"}]}` returns `saved: true` and a
     `file.path` of `<project>/n`; `datafile_get` on that path succeeds; saving under a name that
     already exists in the folder returns `INVALID_PARAMS`.
 - **REQ-DOC-012**: The document tool shall provide `set_name` (write), renaming a document that has
@@ -86,13 +89,15 @@ help and profiles come from the core framework.
     `UNSUPPORTED`.
 - **REQ-DOC-014**: The document tool shall provide `set_read_only` (write), making a saved
   document read-only or editable.
-  - _Acceptance_: `set_read_only {"read_only": true}` on a saved document succeeds and a following
-    `datafile_get` reports `read_only: true` within 5 s; `read_only: false` reverses it; an unsaved
-    document returns `INVALID_PARAMS`.
+  - _Acceptance_: `set_read_only {"read_only": false}` on a saved (locked) document returns
+    `changed: true` and a following `datafile_get` reports `read_only: false`; `read_only: true`
+    reverses it; repeating it returns `changed: false`; an unsaved document returns
+    `INVALID_PARAMS`; a state not observed within 10 tries returns `READ_ONLY_NOT_APPLIED`
+    (REQ-DOC-024).
 - **REQ-DOC-015**: The document tool shall provide `datafile_set` (write, rename a data file; `name` is a
   core `FileName`; Fusion's `DataFile.description` has no setter, so descriptions are set only by `save`/`save_as`) and `datafile_refresh` (write, refresh its cached cloud state).
-  - _Acceptance_: `datafile_set {"file": f, "name": "n"}` returns `name` `n` and a
-    following `datafile_get` agrees; `datafile_set` without `name` returns
+  - _Acceptance_: `datafile_set {"files": [{"file": f, "name": "n"}]}` returns `name` `n` and a
+    following `datafile_get` agrees; an entry without `name` returns
     `INVALID_PARAMS`; `datafile_refresh` returns the data file properties.
 - **REQ-DOC-016**: The document tool shall provide `datafile_copy` (write) and `datafile_move`
   (write), copying or moving a data file into another folder.
@@ -132,3 +137,49 @@ help and profiles come from the core framework.
   - _Acceptance_: `help` for each action reports the timeout listed in design § 3; a unit test
     with the member removed from the fake returns `UNSUPPORTED` for each feature-detected member
     listed in design § 4; no document action emits `PTransaction` text commands.
+- **REQ-DOC-023**: `import`, `import_mesh`, `export`, `open`, `save`, `save_as`, `close`,
+  `set_read_only`, `datafile_set`, `datafile_copy`, `datafile_move`, `datafile_delete` and
+  `datafile_refresh` shall take a core `bulk` list of 1 to 50 entries (`paths`, `files`,
+  `documents`, or `SaveAsEntry`/`RenameEntry` models), run each entry through `ctx.bulk` so one bad entry fails
+  alone, and return `{"results", "ok", "failed"}`; shared parameters apply to every entry and their
+  resolution errors fail the call; `close` and `datafile_delete` need `confirm` once per call
+  (design § 2.7).
+  - _Acceptance_: Unit: for each of the 13 actions a 3-entry call with a bad middle entry returns
+    `ok: 2, failed: 1` in entry order; 0 or 51 entries and a singular `path`/`file`/`document`/`name`
+    parameter each return `INVALID_PARAMS`, the singular one with hints carrying the action's parameter schema; `documents` omitted acts on the active document. Live (`bulk` scenario):
+    closing two saved documents in one call and reopening them with a third, missing path returns
+    `ok: 2, failed: 1` with `NOT_FOUND` for the third.
+- **REQ-DOC-024**: `save` and `save_as` shall, when `read_only` (default true), run Make Read-Only
+  on the saved document and verify the cloud file's `isReadOnly` with the core bounded retry (within
+  10 tries, 1 s apart), returning the entry error `READ_ONLY_NOT_APPLIED` when not observed (the version
+  stays saved); `save` shall capture the data file before `doc.save`, and a `save` whose upload is
+  pending fails `NOT_ALLOWED` under a folder limit, else `INVALID_PARAMS`; `set_read_only` shall use the same core helper and error (design § 6.4, § 6.5, § 6.8;
+  core design § 5.13).
+  - _Acceptance_: Unit (core `VERIFY_DELAY` 0): the lock command follows the save and the entry
+    reports `read_only: true` when the fake flips (also when `save` leaves `dataFile.id` a local path), `READ_ONLY_NOT_APPLIED` when it never does, and no
+    command with `read_only: false`. Live (`save_locks` scenario): `datafile_get` reports `read_only`
+    true after `save_as` and after `save`, and false after `save {"read_only": false}`.
+- **REQ-DOC-025**: With a folder limit, every `folder`/`file` address (`_folder`/`_file`), the
+  `save`/`save_as`/`set_read_only` targets and every document edit through `guard.ensure_editable`
+  shall be inside the limit or fail `NOT_ALLOWED`; `save_as` shall default `folder` to the limit
+  (no limit and no `folder` → `INVALID_PARAMS`); the not-limited actions are listed in design § 2.8.
+  - _Acceptance_: Unit with limit `P/A`: every case in design § 10.1.
+    Live (`folder_limit` scenario): under the project-root limit `save_as` without `folder` saves
+    into the project root; under a sub-path limit the project-root file is `NOT_ALLOWED` for
+    `datafile_get`, `open` and editing, `save_as` into the root is `NOT_ALLOWED`, and a new unsaved
+    document is editable.
+- **REQ-DOC-026**: Each document action shall declare the `edits_document` value of design § 3;
+  `save`, `advance_to_latest`, `update_all_references` and `import` into the active design shall
+  call `guard.ensure_editable` on the document they edit, so a saved read-only document is made
+  editable first (or `READ_ONLY` with `preserve_read_only: true`) (core design § 5.13).
+  - _Acceptance_: Unit: the registry shows the § 3 values; `save` of a read-only fake document runs
+    Make Editable before `save` and lists it in `made_editable`; with `preserve_read_only: true` the
+    entry is `READ_ONLY` and nothing is saved. Live (`auto_unlock` scenario): `sketch.create` on a
+    locked saved document with `preserve_read_only: true` returns `READ_ONLY` and without it
+    succeeds with `made_editable` and leaves the file editable.
+- **REQ-DOC-027**: Each list action's docstring (its `help` text) shall name its list parameter,
+  the 1–50 bound, the shared parameters and the `{"results", "ok", "failed"}` result; `save` and
+  `save_as` shall document `read_only`, and `save_as` its folder-limit default (design § 2.7).
+  - _Acceptance_: A unit test calls `help` for each of the 13 actions and asserts the help text
+    contains the list parameter name, `50` and `results`; `save`/`save_as` help contains
+    `read_only`; `save_as` help contains `folder limit`.

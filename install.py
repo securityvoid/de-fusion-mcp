@@ -1,7 +1,7 @@
 """Install De-Fusion into Autodesk Fusion (design § 9).
 
 Run with any Python >= 3.10 outside Fusion:
-    python install.py [--uninstall] [--fusion-python PATH]
+    python install.py [--uninstall] [--fusion-python PATH] [--folder PATH]
 """
 import argparse
 import ast
@@ -13,10 +13,16 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parent
 WINDOWS = sys.platform == "win32"
-EXIT_CODES = "Exit codes: 0 success, 1 pip failed, 2 Fusion Python not found, 3 link conflict."
+EXIT_CODES = ("Exit codes: 0 success, 1 pip failed, 2 Fusion Python not found, 3 link conflict, "
+              "4 invalid --folder.")
+
+
+def norm(path):  # defusion.guard.norm (design § 5.13); install.py does not import defusion
+    return [s for s in path.strip().strip("/").split("/") if s]
 
 
 def _env(name):
@@ -105,9 +111,11 @@ def conflict(link):
     return 3
 
 
-def port_and_token(path):
-    """Top-level ``port`` and ``token`` of config.toml (lines before the first table)."""
-    port, token = 8642, None
+def top_level_config(path):
+    """Top-level ``port``, ``token`` and ``folder`` of config.toml (lines before the first table).
+
+    ``folder`` is the normalised path, or ``(None, error)`` when the config value is invalid (§ 6.1)."""
+    port, token, folder = 8642, None, (None, None)
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.lstrip().startswith("["):
             break
@@ -117,7 +125,12 @@ def port_and_token(path):
         m = re.match(r'\s*token\s*=\s*"([^"]*)"', line)
         if m and m.group(1).strip():
             token = m.group(1)
-    return port, token
+        m = re.match(r'\s*folder\s*=\s*(?:"([^"]*)"|([^#]*?))\s*(?:#.*)?$', line)
+        if m:
+            value = m.group(1) if m.group(1) is not None else m.group(2)
+            folder = ("/".join(norm(value)), None) if m.group(1) is not None and norm(value) else (
+                None, "config folder '%s': needs a project-qualified path like Project/Folder" % value)
+    return port, token, folder
 
 
 def uninstall():
@@ -131,7 +144,7 @@ def uninstall():
     return 0
 
 
-def install(fusion_python):
+def install(fusion_python, folder=None):
     python, searched = find_fusion_python(fusion_python)
     if not python or not Path(python).exists():
         print("Fusion Python not found. Searched:\n  " + "\n  ".join(searched) + "\nUse --fusion-python PATH.", file=sys.stderr)
@@ -153,13 +166,20 @@ def install(fusion_python):
     if not cfg.exists():
         cfg.parent.mkdir(parents=True, exist_ok=True)
         cfg.write_text(default_toml(), encoding="utf-8")
-    port, token = port_and_token(cfg)
-    entry = {"type": "http", "url": "http://127.0.0.1:%d/mcp" % port}
+    port, token, (cfg_folder, folder_error) = top_level_config(cfg)
+    if folder is None:
+        folder = cfg_folder
+        if folder_error:
+            print("%s: %s; the url below has no ?folder=" % (cfg, folder_error), file=sys.stderr)
+    url = "http://127.0.0.1:%d/mcp" % port
+    if folder:
+        url += "?folder=" + quote("/".join(norm(folder)), safe="")
+    entry = {"type": "http", "url": url}
     if token:
         entry["headers"] = {"Authorization": "Bearer " + token}
     print("Add to your MCP client config:")
     print(json.dumps({"mcpServers": {"de-fusion": entry}}, indent=2))
-    print("Append ?profile=<items> to the url to select a profile.")
+    print("Append %sprofile=<items> to the url to select a profile." % ("&" if folder else "?"))
     return 0
 
 
@@ -168,8 +188,14 @@ def main(argv=None):
                                  epilog=EXIT_CODES, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--uninstall", action="store_true", help="remove the link and lib/; keep config.toml")
     ap.add_argument("--fusion-python", metavar="PATH", help="Fusion's Python instead of the newest discovered one")
+    ap.add_argument("--folder", metavar="PATH",
+                    help="print the url with ?folder=PATH (a folder limit like Project/Folder); "
+                         "overrides config folder, does not write config.toml")
     args = ap.parse_args(argv)
-    return uninstall() if args.uninstall else install(args.fusion_python)
+    if args.folder is not None and not norm(args.folder):
+        print("--folder needs a project-qualified path like Project/Folder", file=sys.stderr)
+        return 4
+    return uninstall() if args.uninstall else install(args.fusion_python, args.folder)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,9 @@ CAM output refs of § 3.
 
 REQ-CAM-001 (§ 2) and REQ-CAM-002 (§ 3) apply to every action. `post_process` is `write` because
 the file route runs a client-named `.cps` post processor as code (the export rule of core § 5.1
-does not apply); its temporary NC program (§ 4.4) is deleted before return.
+does not apply); its temporary NC program (§ 4.4) is deleted before return. `post_process`
+declares `edits_document="none"` (core design § 5.13 table); the other write actions keep the
+default `"active"`.
 
 ## 2. Obtaining the CAM product (`_cam`)
 ```python

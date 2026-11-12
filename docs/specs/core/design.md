@@ -30,6 +30,7 @@ De-Fusion/                      # the add-in folder; installer links it into Fus
     context.py                  # Ctx passed to every action
     errors.py                   # ActionError and error codes
     results.py                  # envelope, size budget, paging, change summary, Image
+    guard.py                    # read-only guard and folder limit (§ 5.13)
     log.py                      # file logger
     tools/
       __init__.py               # imports every tool module so @action registers
@@ -76,7 +77,12 @@ as a module name; the package code lives in `defusion/`.
 - Wrapped by the auth middleware (§ 7) and served by `uvicorn.Server` bound to `127.0.0.1:<port>`
   (default 8642).
 - `INSTRUCTIONS`: one paragraph telling the client that each tool takes `action` + `params`, that
-  `action="help"` returns the schema for an action, and that lengths accept unit expressions.
+  `action="help"` returns the schema for an action, and that lengths accept unit expressions,
+  followed by these three sentences, verbatim: `Document file actions take a list of 1 to 50
+  entries and return one result per entry with ok and failed counts. A write to a saved read-only
+  document makes it editable first unless params.preserve_read_only is true; document.save and
+  document.save_as make the saved file read-only again. A folder=<Project/Path> query on the URL
+  limits cloud files, folders and edits of saved documents to that folder and its subfolders.`
 
 ### 3.3 Stop
 `stop()`: sets `should_exit`, joins the uvicorn thread for up to 5 s, then waits until the port
@@ -128,7 +134,8 @@ Python `logging` to `<config dir>/defusion.log`, rotating at 1 MiB × 3 files, l
 ## 5. Action framework (`actions.py`)
 ### 5.1 Declaring an action
 ```python
-@action(tool, name=None, access=..., timeout=30, undo_group=True, main_thread=True)   # signature
+@action(tool, name=None, access=..., timeout=30, undo_group=True, main_thread=True,
+        edits_document=None)                                                    # signature
 
 @action("model", access="write", timeout=60)
 def extrude(ctx: Ctx, profile: Profile, distance: Length,
@@ -154,6 +161,16 @@ def list_sketches(ctx: Ctx, offset: int = 0, limit: int = 100) -> dict: ...
   allowed in the signature, no undo group, no change summary). Used by `server.status` and
   `server.job_status` so they answer while the main-thread queue is stuck. Only `read` actions may
   set it (else raises at import time).
+- `edits_document`: `"active"`, `"action"`, `"none"`, or `None` (default) meaning `"active"` for
+  `write`/`destructive` and `"none"` for `read`. `"active"`: the pipeline guards the active
+  document before the call (§ 5.3 step 6, § 5.13). `"action"`: the action guards each document it
+  edits itself with `guard.ensure_editable(ctx, doc)` (used when the edited document is not simply the
+  active one, or per bulk entry). `"none"`: the action edits no open document (document lifecycle,
+  camera, local files). `"active"` or `"action"` on a `read` or `main_thread=False` action raises
+  at decoration time. For `"active"` and `"action"` the framework adds
+  `preserve_read_only: bool = false` to the action's model (like `confirm`); the pipeline removes
+  it from the params before calling the function and sets `ctx.preserve_read_only`. The actions
+  declaring `"none"` are listed in § 5.13.
 - The first docstring line is the summary; the full docstring is the help text.
 - Parameters after `ctx` define the input. Allowed annotations: `str`, `int`, `float`, `bool`,
   `list[...]`, `dict[str, Any]`, `dict[str, T]` with `T` one of `str int float bool`, `Literal[...]`, unions of these (`X | None`, `int | str`,
@@ -190,7 +207,9 @@ For `tools/call` of tool T with `{action, params, units}`:
 5. `destructive` and `params.confirm` is not `true` → `CONFIRM_REQUIRED`. The framework adds
    `confirm: bool = false` to every destructive action's model.
 6. Dispatch to the main thread (§ 4) a closure that: builds `Ctx`; resolves typed parameters
-   (§ 5.4); for `write`/`destructive`, snapshots the change summary (§ 5.8) and opens the undo
+   (§ 5.4); for `edits_document == "active"` with an open document, calls
+   `guard.ensure_editable(ctx, ctx.document)` (§ 5.13; its error ends the call before any undo
+   group or snapshot); for `write`/`destructive`, snapshots the change summary (§ 5.8) and opens the undo
    group (§ 5.7); calls the function; closes the undo group; computes the change summary.
    For `main_thread=False` actions the function is instead called directly on the request thread
    with a Fusion-free `Ctx` (§ 5.1); they are not time-limited and run to completion.
@@ -255,7 +274,8 @@ Success: `CallToolResult(isError=False, content=[TextContent(json)], structuredC
  "units": {"length": "mm", "angle": "deg"}, "changes": {...}}
 ```
 `changes` appears only for `write`/`destructive`. `undo_grouped` is a top-level key beside `changes`,
-present only when `false` (§ 5.7). Error: `isError=True` with
+present only when `false` (§ 5.7). `made_editable` is a top-level list of the names of documents
+the call made editable (§ 5.13), present only when non-empty, on success and error envelopes. Error: `isError=True` with
 ```json
 {"ok": false, "tool": "...", "action": "...",
  "error": {"code": "...", "message": "...", "hints": ["..."], "schema": {...}, "candidates": [...]}}
@@ -265,7 +285,7 @@ meta: dict)` or a list of them; the result content is then one `ImageContent` pe
 then `TextContent(json of meta envelope)`.
 
 **Size budget.** Serialised `result` over 65,536 UTF-8 bytes of JSON (exactly 65,536 is accepted) →
-error `RESULT_TOO_LARGE` with a hint to use a smaller `limit` or a larger `offset`. The total PNG
+error `RESULT_TOO_LARGE` with a hint to use a smaller `limit` or a larger `offset` (bulk results: § 5.12). The total PNG
 bytes of all images in one result over 4 MiB → `RESULT_TOO_LARGE` naming the size and saying to
 reduce the image size (`width`/`height`, or `tile` for `view_sheet`). List-returning actions declare `offset: int = 0, limit: int = 100` and return
 `ctx.page(seq, offset, limit, build=None)` = `{"items": [...], "total": n, "offset": o, "next_offset": o+len or null}`;
@@ -317,6 +337,11 @@ action gets `None` for `app`, `ui`, `document`, `design`):
 - `attr_set(entity, key, value)` stores `json.dumps(value)` in attribute group `defusion`;
   `attr_get(entity, key)` returns the `json.loads` value, or `None` when the attribute is absent.
 - `fail(code, message, hints=())` raises `ActionError`.
+- `folder_limit`: the request's normalised folder limit (`"Project/Sub"`) or `None` (§ 6.4).
+- `preserve_read_only`: `bool`, from the call's params (§ 5.1); `False` when the action has none.
+- `made_editable`: `list[str]`, filled by `guard.ensure_editable`, copied into the envelope (§ 5.5).
+- `bulk(entries, fn)` (§ 5.12); no `ensure_editable`/`check_folder` methods: actions call the § 5.13
+  `guard.ensure_editable(ctx, doc)` and `guard.check_folder(ctx, path)` functions.
 
 ### 5.10 Errors (`errors.py`)
 `ActionError(code, message, hints=(), **extra)`. Each `extra` keyword is copied as a key of the
@@ -327,7 +352,9 @@ exception from an action becomes `FUSION_ERROR` with the exception text and its 
 |---|---|
 | `INVALID_PARAMS` | params fail validation or a value is out of range |
 | `UNKNOWN_ACTION` | no such action on the tool |
-| `NOT_ALLOWED` | action excluded by the request's profile |
+| `NOT_ALLOWED` | action excluded by the request's profile, or target outside the request's folder limit (§ 5.13) |
+| `READ_ONLY` | the target document is read-only and `preserve_read_only` is true (§ 5.13) |
+| `READ_ONLY_NOT_APPLIED` | the requested read-only state was not observed on the cloud file within 10 tries 1 s apart (§ 5.13) |
 | `CONFIRM_REQUIRED` | destructive action without `confirm: true` |
 | `NOT_FOUND` / `AMBIGUOUS` | Ref resolution |
 | `NO_DOCUMENT` / `NO_DESIGN` | nothing active |
@@ -346,6 +373,102 @@ current main-thread call: § 5.3 step 4 validation (`INVALID_PARAMS`), step 5 co
 snapshot and does not dispatch; the caller's group and summary cover it. `"tool.action"` not in
 `ctx.allowed` → `NOT_ALLOWED`; unknown → `UNKNOWN_ACTION`. Returns the function's raw result
 (not an envelope); errors propagate as `ActionError`. Used by `history.apply_recipe_step`.
+It runs no document guard (§ 5.13): the outer call's guard covers it; an inner
+`preserve_read_only` is validated and dropped.
+
+### 5.12 Bulk entries
+An action that acts on several files or documents declares its list parameter with
+`types.bulk(t)` = `Annotated[list[t], Field(min_length=1, max_length=50)]`; an empty list or more
+than 50 entries fails step 4 with `INVALID_PARAMS` before anything runs. Entries are strings or
+pydantic models (`extra="forbid"`).
+
+`ctx.bulk(entries, fn) -> dict` calls `fn(entry)` for each entry in order, inside the call's one
+dispatcher item. Per entry it records `{"input": <entry>, "ok": true, "result": <fn return>}`, or
+on an exception `{"input": <entry>, "ok": false, "error": <error object>}` where the error object
+is the envelope's `error` shape (§ 5.5): an `ActionError` gives its code, message, hints and
+extras; any other exception gives `FUSION_ERROR` as § 5.10. `input` is the entry as validated
+(`model_dump()` for model entries, `null` for a defaulted entry). A failed entry never stops later
+entries. It returns `{"results": [...], "ok": <entries ok>, "failed": <entries failed>}`.
+
+The envelope's `ok` is `true` whenever the call ran, even when every entry failed. Call-level
+errors (validation and bounds, `NOT_ALLOWED`, `CONFIRM_REQUIRED`, and errors raised by the action
+before it calls `ctx.bulk`, e.g. resolving a shared `folder`) give an error envelope as usual.
+`confirm` is given once for the whole call. The action's `timeout` covers the whole call; a call
+that outlives it becomes a job (§ 4) whose result is the bulk result. Undo grouping and the change
+summary stay one per call. A failed entry's partial work is not rolled back (the § 5.7 `Abort` runs only
+for call-level errors); a bulk action that needs rollback undoes it inside its entry function. The
+§ 5.5 size budget applies to the whole result; over it, `RESULT_TOO_LARGE` has the message "all
+entries ran" and the hints "check state with document.list_open or datafile_get" and "send fewer
+entries per call"; per-entry output (e.g. export `files`) is bounded.
+
+### 5.13 Document guard (`guard.py`)
+Constants `VERIFY_TRIES = 10` and `VERIFY_DELAY = 1.0` seconds (unit tests set the delay to 0).
+
+- `saved_file(doc) -> DataFile | None`: `doc.dataFile`; `None` (never saved), a raising read, or
+  an `id` not starting with `urn:` (upload pending) → `None`.
+- `never_saved(doc) -> bool`: `doc.dataFile is None`; a raising read → `False` (upload pending).
+- `folder_path(folder) -> str | None`: walk `folder.parentFolder` until `isRoot`, prepend
+  `parentProject.name`, join with `/` (a project root folder's path is the project name); any
+  exception → `None`. The document tool's path helpers use it (document design § 2.2).
+- `norm_folder(value) -> str | None`: the `/`-joined path of a folder-path list/string value, or `None`
+  when empty; shared by callers that normalise a folder argument.
+- `norm(path) -> list[str]`: `[s for s in path.strip().strip("/").split("/") if s]`.
+- `check_folder(ctx, path)`: `ctx.folder_limit is None` → return. `path is None` →
+  `NOT_ALLOWED` ("cannot tell the folder of the target; folder limit '<L>' is set", hint "address
+  the file by a path inside the limit, or retry after its upload finishes"). Otherwise
+  `norm(path)[:len(norm(L))] == norm(L)` → return, else `NOT_ALLOWED` ("'<path>' is outside the
+  folder limit '<L>'", hint "use a file or folder under <L>; the limit comes from ?folder= or
+  config folder"). Segments compare exactly and case-sensitively, so `P/AB` is not inside `P/A`;
+  subfolders at any depth are inside.
+- `wait_read_only(lookup, want) -> bool`: up to `VERIFY_TRIES` times: `df = lookup()` (an
+  exception counts as `None`); `df is not None and df.isReadOnly == want` → `True`. Between tries
+  (not after the last) it waits `VERIFY_DELAY` seconds, calling `adsk.doEvents()` every 50 ms so
+  Fusion applies the cloud update. After the last try → `False`.
+- `set_read_only(ctx, doc, want, lookup) -> bool`: `prev = ctx.app.activeDocument`; if `doc` is not
+  `prev`, `doc.activate()` (`False` → `FUSION_ERROR` "could not activate <name>");
+  `ctx.text_command("Commands.Start ActiveDocumentDeactivateCommand")` when `want` (Fusion's Make
+  Read-Only) else `"Commands.Start ActiveDocumentActivateCommand"` (Make Editable); in `finally`
+  re-activate `prev` when it differs (`prev.activate()` returning `False` → `FUSION_ERROR` "could not
+  re-activate <prev name>", unless an error is already propagating); then return `wait_read_only(lookup, want)`. `lookup` returns
+  a fresh `DataFile` (normally `lambda: ctx.app.data.findFileById(<urn>)`); the open document's own
+  `dataFile.isReadOnly` reads stale right after a change, so it is never used for verification.
+- `ensure_editable(ctx, doc)`:
+  1. `doc is None` or `never_saved(doc)` → return (never-saved documents are
+     always editable and never folder-limited). `df = saved_file(doc)`; `None` (upload pending) →
+     `check_folder(ctx, None)` (`NOT_ALLOWED` under a folder limit), then return.
+  2. `fresh = fresh_file(ctx, df)` (`ctx.app.data.findFileById(df.id) or df`; shared helper); a raising `findFileById` (file not yet
+     listed right after a save) also falls back to `df`.
+  3. `check_folder(ctx, folder_path(fresh.parentFolder))`.
+  4. `fresh.isReadOnly` false → return.
+  5. `ctx.preserve_read_only` → `READ_ONLY` ("<name> is read-only and preserve_read_only is
+     true", hint "omit preserve_read_only to make it editable first, or call
+     document.set_read_only with read_only false").
+  6. `set_read_only(ctx, doc, False, lambda: ctx.app.data.findFileById(df.id))`; `False` →
+     `READ_ONLY_NOT_APPLIED` ("<name> did not become editable within 10 tries, 1 s apart", hint
+     "retry, or call document.set_read_only with read_only false and check datafile_get"); `True` → append
+     `doc.name` to `ctx.made_editable`.
+  The document stays editable afterwards until `document.save`/`save_as` (document design § 6.4,
+  § 6.5) or `document.set_read_only` locks it again. Each guarded call on a saved document costs one
+  `findFileById`.
+
+**Folder-limit scope.** With a limit set (§ 6.4): (a) every cloud folder or file a document action
+addresses through a `folder`/`file` parameter or entry, (b) the target of `document.save`,
+`document.save_as` and `document.set_read_only`, and (c) every edit of a saved open document through `ensure_editable` (the
+pipeline for `"active"` actions, the action for `"action"` actions) must be inside the limit, else
+`NOT_ALLOWED`. Not limited: never-saved documents (creating, editing, exporting, closing them),
+`read` actions on open documents (document-tool list: document design § 2.8). Code run by `script.execute_python` or
+`server.run_text_command` can reach any file; like `?profile=`, the limit is a guardrail for the
+client, not access control (§ 11).
+
+**Actions declaring `edits_document="none"` outside the document tool** (the document tool's
+declarations are in document design § 3):
+
+| Action | Why |
+|---|---|
+| `server.restart_addin` | restarts the add-in |
+| `script.save_script`, `script.delete_script` | local script files only |
+| `view.set_camera` | camera only |
+| `cam.post_process` | reads the CAM product, writes local NC files |
 
 ## 6. Configuration and profiles
 ### 6.1 Config file
@@ -356,6 +479,7 @@ port = 8642                      # 127.0.0.1 only
 # token = "..."                  # optional; see § 7
 log_level = "INFO"
 default_profile = ["all", "-script"]
+# folder = "My Project/Parts"    # optional default folder limit; see § 6.4
 
 [units]
 length = "mm"                    # default for bare numbers in and for outputs
@@ -372,6 +496,7 @@ Missing file → built-in defaults. Valid keys:
 | `token` | str | none | not blank (§ 7) |
 | `log_level` | str | `INFO` | `DEBUG INFO WARNING ERROR` |
 | `default_profile` | list[str] | `["all", "-script"]` | valid profile items (§ 6.3) |
+| `folder` | str | none | `norm(value)` (§ 5.13) non-empty; the default folder limit (§ 6.4); otherwise the config error `config folder '<value>': needs a project-qualified path like Project/Folder` (blank or non-string value), recorded with the `invalid config <path>: ` prefix of every invalid key |
 | `units.length` | str | `mm` | `mm cm m in ft um` |
 | `units.angle` | str | `deg` | `deg rad` |
 | `profiles.<name>` | list[str] | none | valid profile items (§ 6.3) |
@@ -417,6 +542,21 @@ JSON-RPC error `invalid profile item '<item>': <reason>; valid selectors are in 
 
 `server.status` and `server.job_status` are always allowed, including under a config error (§ 6.1).
 
+**Folder limit.** The query key `folder` selects the request's folder limit:
+`/mcp?folder=My%20Project%2FParts` (URL-encoded, combinable with `profile`:
+`/mcp?folder=P%2FA&profile=readonly`). The value is a project-qualified path in the active hub,
+`<project>/<folder>/...` or just `<project>`; it is normalised to `"/".join(norm(value))`
+(§ 5.13). No `folder` key → config `folder` (none → no limit); a request cannot clear a config
+default. An empty value after normalising or a repeated `folder` key makes every MCP request on
+that URL fail with a JSON-RPC error `invalid folder '<value>': <reason>; use ?folder=<Project>/<Folder> (URL-encoded)` (the reason
+names an empty value or a repeated key), handled like
+`INVALID_PROFILE`: `parse_query` raises `profiles.InvalidFolder(value, reason)`, caught beside
+`InvalidProfile` at the two server.py sites. The folder need not exist: paths are compared as strings (§ 5.13).
+`profiles.parse_query(qs)` returns `(profile_items | None, folder | None)`; the triple (allowed set,
+profile items, folder limit) is cached per distinct query string; `actions.call(tool, args, allowed,
+profile_items, output_units, folder_limit=None)` receives the limit and sets `ctx.folder_limit`
+(added with the guard, TASK-CORE-027, not the query/middleware step).
+
 ### 6.5 Applying the filter
 An SDK `ServerMiddleware` reads the query string from the HTTP request on the request context:
 - `tools/list`: keeps tools with at least one allowed action, rewrites each tool's `action` enum
@@ -451,9 +591,11 @@ else, including a header that fails to decode, with 401 JSON
   length unit squared/cubed. Keys carry no unit suffix; the envelope's `units` field states them.
 
 ## 9. Installer (`install.py`)
-Run with any Python ≥ 3.10 outside Fusion: `python install.py [--uninstall] [--fusion-python PATH]`
-(`--help` prints these flags and the exit codes). Exit codes: 0 success, 1 pip failed, 2 Fusion
-Python not found, 3 link conflict.
+Run with any Python ≥ 3.10 outside Fusion: `python install.py [--uninstall] [--fusion-python PATH]
+[--folder PATH]` (`--help` prints these flags and the exit codes). Exit codes: 0 success, 1 pip
+failed, 2 Fusion Python not found, 3 link conflict, 4 invalid `--folder` (checked first, before
+any other step: `norm(value)` empty → `--folder needs a project-qualified path like
+Project/Folder`).
 1. Finds Fusion's newest bundled Python:
    - macOS: newest `~/Library/Application Support/Autodesk/webdeploy/production/*/Autodesk Fusion.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3`.
    - Windows: newest `%LOCALAPPDATA%\Autodesk\webdeploy\production\*\Python\python.exe`.
@@ -472,7 +614,12 @@ Python not found, 3 link conflict.
    `{"mcpServers": {"de-fusion": {"type": "http", "url": "http://127.0.0.1:<port>/mcp"}}}` with
    `<port>` from the effective `config.toml` (default 8642), plus a
    `"headers": {"Authorization": "Bearer <token>"}` member when a token is configured, then
-   `Append ?profile=<items> to the url to select a profile.`
+   `Append ?profile=<items> to the url to select a profile.` When a folder is set (`--folder`, else
+   the effective config `folder`; a config `folder` whose `norm` is empty is a config error and the url
+   is printed without `?folder=`), the url is
+   `http://127.0.0.1:<port>/mcp?folder=<urllib.parse.quote("/".join(norm(folder)), safe="")>` and
+   the last line reads `Append &profile=<items> to the url to select a profile.` `--folder` only
+   changes the printed url; it does not write `config.toml`.
 `--uninstall` removes the link and `lib/`; it keeps `config.toml`.
 
 The manifest sets `runOnStartup: true`, so after install the add-in loads with Fusion and appears
@@ -499,8 +646,15 @@ once in Scripts and Add-Ins as `De-Fusion`. Users must not also add the repo pat
   - `LIVE_SCENARIOS: list[tuple[str, str, Callable[[ClientSession], Awaitable[None]]]]` =
     `(name, "tool.action", async fn(session))`. The tag names the action the scenario tests;
     `session` is the SDK `ClientSession` connected with the harness's profile and token.
-    `scripts/live_check.open_session(profile=None)` is an async context manager that opens
-    another session with the harness's port and token and the given profile.
+    `scripts/live_check.open_session(profile=None, folder=None)` is an async context manager that
+    opens another session with the harness's port and token and the given profile and, when
+    `folder` is given, `folder=<URL-encoded folder>` in the query (§ 6.4). The live run requires the
+    config `folder` to be unset (scenarios save in the active project's root; `--help` and the README say
+    so); folder-limit
+    scenarios use `open_session(folder=...)`. The final freeze step calls the list forms
+    `open {"files": [<id>]}`, `set_read_only {"documents": [<doc id>]}` and
+    `close {"documents": [<doc id>], "confirm": true}` (document design § 2.7); each call counts as
+    done only when the envelope `ok` and `results[0].ok` are both true, else `FAIL ...` and exit 1.
     A scenario fails by raising.
   - `--only tool` runs every scenario of that tool module; `--only tool.action` runs the
     scenarios tagged `tool.action`. Scenarios run in list order.
@@ -513,7 +667,9 @@ once in Scripts and Add-Ins as `De-Fusion`. Users must not also add the repo pat
 ## 11. Security
 Bound to 127.0.0.1; Host/Origin checks from the SDK; optional bearer token. `?profile=` and
 `confirm` are chosen by the client and do not restrict a local caller; the token is the only
-access control. The default profile excludes `script` actions only as a convenience.
+access control. The default profile excludes `script` actions only as a convenience. The same
+holds for `?folder=` and `preserve_read_only` (§ 5.13): they keep a cooperative client inside a
+folder and away from locked documents; they do not restrict code it runs.
 
 ## 12. Module accessors used by tool sets
 Stable names other modules (chiefly `tools/server.py`) read; none touches `adsk`.
@@ -525,7 +681,7 @@ Stable names other modules (chiefly `tools/server.py`) read; none touches `adsk`
 | `dispatch.get_job(job_id) -> dict \| None` | registry entry `{action, state, result \| error, started, finished}` (§ 4) |
 | `config.CONFIG_DIR: Path` | `~/.defusion` (Windows `%USERPROFILE%\.defusion`; env `DEFUSION_CONFIG_DIR` overrides for tests) |
 | `config.CONFIG_PATH: Path` | `CONFIG_DIR / "config.toml"` |
-| `config.settings()` | the effective config loaded at `start()` (`.port`, `.token`, `.log_level`, `.default_profile`, `.units`, `.profiles`) |
+| `config.settings()` | the effective config loaded at `start()` (`.port`, `.token`, `.log_level`, `.default_profile`, `.folder`, `.units`, `.profiles`) |
 | `config.load_error() -> str \| None` | config error recorded at `start()` (§ 6.1) |
 | `auth.token() -> str \| None` | effective token (§ 7), `None` when auth is off |
 | `server.state() -> str` | `starting`, `running` or `failed` (§ 3.1) |

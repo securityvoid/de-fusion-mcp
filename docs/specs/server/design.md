@@ -13,6 +13,9 @@ Everything shared is the core framework (core design § 5). `status` and `job_st
 allowed when any action is (core design § 6.4); `restart_addin` and `run_text_command` follow the
 profile. The default profile `["all", "-script"]` includes all four. After any config error only
 `status` and `job_status` are allowed (core design § 6.1) and `status` reports `config.error`.
+`restart_addin` declares `edits_document="none"` (core design § 5.13 table); `run_text_command`
+keeps the default `"active"`, so it is guarded like any edit of the active document and accepts
+`preserve_read_only`.
 
 ## 2. Core interfaces used
 This module reads core state through these names, all provided by core (core design § 5.1,

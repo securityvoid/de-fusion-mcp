@@ -101,6 +101,14 @@ def test_start_returns_quickly_then_runs(env):
 def test_instructions_one_paragraph_with_required_statements():
     t = server.INSTRUCTIONS
     assert "\n" not in t and "action" in t and "params" in t and 'action="help"' in t and "unit" in t
+    for sentence in (
+        "Document file actions take a list of 1 to 50 entries and return one result per entry with ok and failed counts.",
+        "A write to a saved read-only document makes it editable first unless params.preserve_read_only is true; "
+        "document.save and document.save_as make the saved file read-only again.",
+        "A folder=<Project/Path> query on the URL limits cloud files, folders and edits of saved documents to that "
+        "folder and its subfolders.",
+    ):
+        assert sentence in t, sentence
 
 
 def test_listens_on_loopback_only(env):

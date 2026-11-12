@@ -335,7 +335,7 @@ def load_script(ctx: Ctx, name: str) -> dict:
     return {"name": path.stem, "code": path.read_text(encoding="utf-8")}
 
 
-@action("script", access="write", undo_group=False)
+@action("script", access="write", undo_group=False, edits_document="none")
 def save_script(ctx: Ctx, name: str, code: str) -> dict:
     """Save Python code as a new named script. Refuses to replace an existing one."""
     path = _script_path(ctx, name)
@@ -357,7 +357,7 @@ def save_script(ctx: Ctx, name: str, code: str) -> dict:
     return {"script": {"name": path.stem, "bytes": size}}
 
 
-@action("script", access="destructive", undo_group=False)
+@action("script", access="destructive", undo_group=False, edits_document="none")
 def delete_script(ctx: Ctx, name: str) -> dict:
     """Delete a saved script."""
     path = _script_path(ctx, name)

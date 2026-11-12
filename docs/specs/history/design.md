@@ -481,7 +481,7 @@ from core `call_inline`).
 calls go through `scripts/live_check.call(session, tool, action, params)`. Run with
 `python scripts/live_check.py --profile full --only history[.<action>]` (`full` because the
 snapshot scenarios use `script.execute_python` and the recipe scenarios use destructive
-`document.close`). Each scenario builds its own geometry in the scratch design. Helpers:
+`document.close {"documents": [<id>], "confirm": true}`, document design § 2.7). Each scenario builds its own geometry in the scratch design. Helpers:
 - `box`: `live_check.box(session, w, d, h)` (core design § 10); returns the body ref.
 - `_pose(session)`: two `box`es, each moved into its own component with
   `assembly.create_component {"bodies": [<body ref>]}`; then `script.execute_python {"code":
