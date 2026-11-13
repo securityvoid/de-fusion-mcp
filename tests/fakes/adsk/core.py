@@ -969,3 +969,192 @@ def _lazy(key, factory):
 Application.documents = _lazy("_documents", Documents)
 Application.data = _lazy("_data", lambda app: Data())
 Application.importManager = _lazy("_import_manager", ImportManager)
+
+
+# --- Command dialog fakes (setup dialog) ---------------------------------------------------------
+class Event(CustomEvent):
+    def __init__(self):
+        super().__init__(None)
+
+    def fire(self, args):
+        for h in list(self._handlers):
+            h.notify(args)
+
+
+class CommandCreatedEventHandler(_Fake):
+    pass
+
+
+class InputChangedEventHandler(_Fake):
+    pass
+
+
+class CommandEventHandler(_Fake):
+    pass
+
+
+class DropDownStyles:
+    TextListDropDownStyle = 1
+
+
+class CommandInput(_Fake):
+    def __init__(self, input_id, name):
+        self.id, self.name, self.isVisible = input_id, name, True
+
+
+class StringValueCommandInput(CommandInput):
+    def __init__(self, input_id, name, value=""):
+        super().__init__(input_id, name)
+        self.value, self.isPassword = value, False
+
+
+class BoolValueCommandInput(CommandInput):
+    def __init__(self, input_id, name, is_check_box, value=False):
+        super().__init__(input_id, name)
+        self.value = value
+
+
+class TextBoxCommandInput(CommandInput):
+    def __init__(self, input_id, name, text, num_rows, is_read_only):
+        super().__init__(input_id, name)
+        self.text = text
+        self.numRows, self.isReadOnly = num_rows, is_read_only
+
+
+class ListItem(_Fake):
+    def __init__(self, name, is_selected):
+        self.name, self.isSelected = name, is_selected
+
+
+class ListItems(Collection):
+    def add(self, name, is_selected, icon=""):
+        item = ListItem(name, is_selected)
+        if is_selected:
+            for other in self._items:
+                other.isSelected = False
+        self._items.append(item)
+        return item
+
+
+class DropDownCommandInput(CommandInput):
+    def __init__(self, input_id, name, style):
+        super().__init__(input_id, name)
+        self.dropDownStyle, self.listItems = style, ListItems()
+
+    @property
+    def selectedItem(self):
+        return next((i for i in self.listItems if i.isSelected), None)
+
+    def select(self, name):  # test hook: the user picks an item
+        for i in self.listItems:
+            i.isSelected = i.name == name
+
+
+class CommandInputs(Collection):
+    def _add(self, inp):
+        self._items.append(inp)
+        return inp
+
+    def itemById(self, input_id):
+        return next((i for i in self._items if i.id == input_id), None)
+
+    def addStringValueInput(self, input_id, name, value=""):
+        return self._add(StringValueCommandInput(input_id, name, value))
+
+    def addBoolValueInput(self, input_id, name, is_check_box, resource_folder="", value=False):
+        return self._add(BoolValueCommandInput(input_id, name, is_check_box, value))
+
+    def addTextBoxCommandInput(self, input_id, name, text, num_rows, is_read_only):
+        return self._add(TextBoxCommandInput(input_id, name, text, num_rows, is_read_only))
+
+    def addDropDownCommandInput(self, input_id, name, style):
+        return self._add(DropDownCommandInput(input_id, name, style))
+
+
+class InputChangedEventArgs(_Fake):
+    def __init__(self, inputs, input):
+        self.inputs, self.input = inputs, input
+
+
+class Command(_Fake):
+    def __init__(self):
+        self.commandInputs = CommandInputs()
+        self.isOKButtonEnabled, self.okButtonText = True, "OK"
+        self.isCancelButtonVisible = True
+        self.execute, self.inputChanged = Event(), Event()
+
+    def change(self, inp):  # test hook: the user edited ``inp``
+        self.inputChanged.fire(InputChangedEventArgs(self.commandInputs, inp))
+
+    def ok(self):  # test hook: the user pressed OK
+        self.execute.fire(CommandEventArgs(self))
+
+
+class CommandEventArgs(_Fake):
+    def __init__(self, command):
+        self.command = command
+
+
+class ButtonDefinition(CommandDefinition):
+    """``execute`` opens the dialog: fires ``commandCreated`` with a new ``Command`` kept in ``last_command``."""
+
+    def __init__(self, command_id, name):
+        super().__init__(command_id)
+        self.name, self.commandCreated, self.last_command = name, Event(), None
+
+    def execute(self):
+        self.executed += 1
+        self.last_command = Command()
+        self.commandCreated.fire(CommandEventArgs(self.last_command))
+        return True
+
+    def deleteMe(self):
+        self._owner._defs.pop(self.id, None)
+        return True
+
+
+def _add_button(self, command_id, name, tooltip="", resource_folder=""):
+    d = ButtonDefinition(command_id, name)
+    d._owner = self
+    self._defs[command_id] = d
+    return d
+
+
+CommandDefinitions.addButtonDefinition = _add_button
+
+
+class ToolbarControl(_Fake):
+    def __init__(self, owner, definition):
+        self._owner, self.id = owner, definition.id
+
+    def deleteMe(self):
+        self._owner._items.remove(self)
+        return True
+
+
+class ToolbarControls(Collection):
+    def addCommand(self, definition):
+        ctl = ToolbarControl(self, definition)
+        self._items.append(ctl)
+        return ctl
+
+    def itemById(self, control_id):
+        return next((c for c in self._items if c.id == control_id), None)
+
+
+class ToolbarPanel(_Fake):
+    def __init__(self, panel_id):
+        self.id, self.controls = panel_id, ToolbarControls()
+
+
+class ToolbarPanels(Collection):
+    def itemById(self, panel_id):
+        return next((p for p in self._items if p.id == panel_id), None)
+
+    def add_panel(self, panel_id):  # test hook
+        panel = ToolbarPanel(panel_id)
+        self._items.append(panel)
+        return panel
+
+
+UserInterface.allToolbarPanels = _lazy("_all_toolbar_panels", lambda ui: ToolbarPanels())

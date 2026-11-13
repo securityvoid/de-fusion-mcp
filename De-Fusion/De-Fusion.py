@@ -23,12 +23,24 @@ def run(context):
             log.error("Dependencies missing in %s; run install.py", _LIB, exc_info=True)
             return
         server.start()
+        try:
+            from defusion import setup_ui
+
+            setup_ui.add()
+        except Exception:
+            log.exception("De-Fusion Setup button failed")
     except Exception:
         log.exception("De-Fusion failed to start")
 
 
 def stop(context):
     log = logging.getLogger("defusion")
+    try:
+        from defusion import setup_ui
+
+        setup_ui.remove()
+    except Exception:
+        log.exception("De-Fusion Setup button removal failed")
     try:
         from defusion import server
 

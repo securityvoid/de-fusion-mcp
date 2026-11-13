@@ -51,6 +51,31 @@ Add the entry the installer printed to your MCP client. With the default port:
 If you set a token, the entry also carries `"headers": {"Authorization": "Bearer <token>"}`. Append
 `?profile=<items>` to the URL to pick a profile for that client.
 
+## Setup dialog
+
+Prefer clicking to editing JSON? In Fusion, open Utilities > Add-Ins and press **De-Fusion Setup**
+(if the button is missing, check the log in `~/.defusion/`; the server still runs). One dialog sets
+the port, an optional folder limit and the auth, then adds De-Fusion to the MCP clients you tick
+(clients whose config file already exists are listed and pre-ticked). Nothing is written until you press Apply.
+
+- **Apply** writes `~/.defusion/config.toml` (`port`, `folder`, `token`; every other key and comment
+  stays) and adds or replaces only the `de-fusion` entry (Codex: `defusion`) in each ticked client's
+  config. Existing files get a `.defusion-bak-<UTC timestamp>` backup first, writes are atomic, and a
+  file that is invalid, a symlink or over 10 MB is skipped with the reason instead of being touched.
+- **Auth**: `Generate token`, `Enter my own` (prefilled from `config.toml`) or `None`.
+- **Token placement**: terminal clients (Claude Code, Codex CLI, Gemini CLI) get a `${DEFUSION_TOKEN}`
+  reference, so the token is not in their files; run the `export DEFUSION_TOKEN=<token>` line the
+  dialog shows in your shell profile yourself (we never edit it). Codex silently ignores the server
+  until that variable is set. GUI clients (Cursor, VS Code Copilot, Windsurf/Devin, Zed, Cline,
+  Claude Desktop) get the literal token in their file, which is then readable only by you.
+- **Remove** mode deletes only the De-Fusion entry from the ticked clients (after a backup) and
+  leaves `config.toml` alone.
+- **Restart**: port and token changes apply after De-Fusion restarts: Utilities > Add-Ins >
+  De-Fusion > Stop, then Run, or restart Fusion.
+- Not supported: ChatGPT Desktop and Grok Desktop need a public HTTPS URL, and De-Fusion only listens
+  on `127.0.0.1`.
+- Claude Desktop connects through `npx mcp-remote`, so it needs Node.js.
+
 ## Config
 
 `~/.defusion/config.toml` (Windows: `%USERPROFILE%\.defusion\config.toml`). Changes apply on the next

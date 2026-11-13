@@ -29,3 +29,10 @@ def test_folder_limit_section_names_tokens():
     s = section("Folder limit")
     for tok in ("?folder=", "folder =", "--folder"):
         assert tok in s
+
+
+def test_setup_dialog_section():
+    s = section("Setup dialog")
+    for tok in ("DEFUSION_TOKEN", "Remove", "restart", "Add-Ins", "Node.js"):
+        assert tok in s
+    assert "restart_addin" not in s
