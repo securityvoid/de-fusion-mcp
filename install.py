@@ -90,6 +90,10 @@ def is_our_link(link):
         return False
 
 
+def is_stale_link(link):
+    return link.is_symlink() and Path(os.readlink(link)).name == "De-Fusion"
+
+
 def make_link(link):
     target = ROOT / "De-Fusion"
     link.parent.mkdir(parents=True, exist_ok=True)
@@ -191,7 +195,10 @@ def install(fusion_python, folder=None):
     link = link_path()
     if link.is_symlink() or link.exists():
         if not is_our_link(link):
-            return conflict(link)
+            if not is_stale_link(link):
+                return conflict(link)
+            remove_link(link)
+            make_link(link)
     else:
         make_link(link)
     cfg = config_dir() / "config.toml"

@@ -324,7 +324,8 @@ installer, the live test harness and README.md. Tool actions are specified by th
   `De-Fusion/lib.tmp-<pid>` with pip run from `sys.executable` (pip 22.3+) and swap it in for `lib/`
   per core design § 9 step 2 (pip probe, stale and failure-path temp cleanup, old-`lib` removal and
   rename failures), and create exactly one link (macOS symlink, Windows directory junction) at
-  Fusion's AddIns `De-Fusion` path, keeping a correct existing link and stopping with exit 3 and a message
+  Fusion's AddIns `De-Fusion` path, keeping a correct existing link, repointing a symlink whose target's final component is `De-Fusion`
+  (REQ-RELEASE-006), and stopping with exit 3 and a message
   naming the path and saying to remove it if anything else is there. Flags and exit codes are those of
   § 9: `--fusion-python PATH`, `--uninstall`, `--folder PATH`, `--help`; exit 0 success, 1 pip failed or
   missing/older than 22.3, 2 Fusion Python not found, 3 link conflict, 4 invalid `--folder`

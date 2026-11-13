@@ -631,7 +631,8 @@ Project/Folder`).
 3. Creates exactly one link to `De-Fusion/` in Fusion's AddIns folder
    (macOS `~/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns/De-Fusion`,
    Windows `%APPDATA%\Autodesk\Autodesk Fusion 360\API\AddIns\De-Fusion`): a symlink on macOS, a
-   directory junction on Windows. An existing correct link is kept; anything else at that path
+   directory junction on Windows. An existing correct link is kept; a symlink whose target's final component is `De-Fusion` is
+   repointed to this checkout and install continues (REQ-RELEASE-006); anything else at that path
    stops the installer (exit 3) with `<path> exists and is not the De-Fusion link; remove it and
    rerun install.py`.
 4. Writes `config.toml` with the § 6.1 content if absent.

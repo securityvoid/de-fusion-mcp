@@ -218,3 +218,5 @@ neighbours, but they are not locks.
 
 Live checks (`scripts/live_check.py`, run against a running add-in) save scratch files in the active
 project's root, so a live run needs the config `folder` unset.
+
+Licensed under the MIT License.

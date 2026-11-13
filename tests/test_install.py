@@ -314,3 +314,39 @@ def test_invalid_folder_flag_exits_4_before_anything(env, capsys, value):
     assert install.main(["--folder", value]) == 4
     assert capsys.readouterr().err.strip() == "--folder needs a project-qualified path like Project/Folder"
     assert env.calls == [] and not env.link.is_symlink()
+
+
+def test_stale_live_link_is_repointed(env, tmp_path):
+    env.build("b", 1)
+    old = tmp_path / "old" / "De-Fusion"
+    old.mkdir(parents=True)
+    env.link.parent.mkdir(parents=True)
+    os.symlink(old, env.link)
+    assert install.main([]) == 0
+    assert os.readlink(env.link) == str(env.root / "De-Fusion")
+
+
+def test_stale_dangling_link_is_repointed(env, tmp_path):
+    env.build("b", 1)
+    env.link.parent.mkdir(parents=True)
+    os.symlink(tmp_path / "gone" / "De-Fusion", env.link)
+    assert install.main([]) == 0
+    assert os.readlink(env.link) == str(env.root / "De-Fusion")
+
+
+def test_real_directory_at_link_path_exits_3_untouched(env):
+    env.build("b", 1)
+    env.link.mkdir(parents=True)
+    (env.link / "keep.txt").write_text("x")
+    assert install.main([]) == 3
+    assert not env.link.is_symlink() and (env.link / "keep.txt").read_text() == "x"
+
+
+def test_link_to_other_name_exits_3_untouched(env, tmp_path):
+    env.build("b", 1)
+    other = tmp_path / "other"
+    other.mkdir()
+    env.link.parent.mkdir(parents=True)
+    os.symlink(other, env.link)
+    assert install.main([]) == 3
+    assert os.readlink(env.link) == str(other)

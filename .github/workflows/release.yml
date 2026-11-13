@@ -1,0 +1,53 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build tarball
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VER="${TAG#v}"
+          git archive --format=tar.gz --prefix=de-fusion-mcp-$VER/ -o de-fusion-mcp-$VER.tar.gz $TAG
+          SHA=$(sha256sum de-fusion-mcp-$VER.tar.gz | cut -d' ' -f1)
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          echo "SHA=$SHA" >> "$GITHUB_ENV"
+
+      - name: Render cask
+        run: python3 scripts/render_cask.py $VER $SHA > cask.rb
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create $TAG de-fusion-mcp-$VER.tar.gz --title $TAG --generate-notes
+
+      - name: Check out tap
+        uses: actions/checkout@v4
+        with:
+          repository: securityvoid/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Update tap
+        run: |
+          mkdir -p tap/Casks
+          cp cask.rb tap/Casks/de-fusion-mcp.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/de-fusion-mcp.rb
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "de-fusion-mcp $VER"
+          git push origin HEAD:main
