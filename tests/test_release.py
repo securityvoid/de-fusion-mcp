@@ -23,12 +23,14 @@ def test_template_has_required_stanzas():
     text = (ROOT / "packaging" / "de-fusion-mcp.rb.tmpl").read_text(encoding="utf-8")
     assert ('url "https://github.com/securityvoid/de-fusion-mcp/releases/download/'
             'v#{version}/de-fusion-mcp-#{version}.tar.gz"') in text
-    for stanza in ("sha256 ", "name ", "desc ", "homepage ", 'depends_on formula: "python@3.13"', "depends_on :macos"):
+    for stanza in ("sha256 ", "name ", "homepage ", 'depends_on formula: "python@3.13"', "depends_on :macos"):
         assert stanza in text
-    postflight = text.split("postflight do", 1)[1].split("\n  end", 1)[0]
+    assert 'desc "Model Context Protocol (MCP) server add-in for Autodesk Fusion CAD"' in text
+    postflight = text.split("postflight_steps do", 1)[1].split("\n  end", 1)[0]
     assert "install.py" in postflight and "must_succeed: true" in postflight
-    preflight = text.split("uninstall_preflight do", 1)[1].split("\n  end", 1)[0]
-    assert "--uninstall" in preflight
+    preflight = text.split("uninstall_preflight_steps do", 1)[1].split("\n  end", 1)[0]
+    assert "--uninstall" in preflight and "must_succeed: false" in preflight
+    assert "postflight do" not in text and "uninstall_preflight do" not in text
     caveats = text.split("caveats", 1)[1]
     assert "Run on Startup" in caveats and "De-Fusion Setup" in caveats
 

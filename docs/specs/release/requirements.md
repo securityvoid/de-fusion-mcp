@@ -36,11 +36,11 @@ notarization, other taps, autostart automation.
   - _Acceptance_: the workflow text references `render_cask.py`, `securityvoid/homebrew-tap`, `secrets.HOMEBREW_TAP_TOKEN`,
     `Casks/de-fusion-mcp.rb` and `git push`, `token: ${{ secrets.HOMEBREW_TAP_TOKEN }}`, and no `x-access-token:` or `@github.com/`; the tap token is not used in the release step; it renders before `gh release create`.
 - **REQ-RELEASE-005**: Cask `de-fusion-mcp` shall be macOS only (no version minimum), with url
-  `https://github.com/securityvoid/de-fusion-mcp/releases/download/v#{version}/de-fusion-mcp-#{version}.tar.gz`, `sha256`, `name`, `desc`, `homepage`,
-  `depends_on formula: "python@3.13"`, a `postflight` that runs `install.py` from the staged path with that Python (`system_command` with `must_succeed: true`), an `uninstall_preflight` that runs
-  `install.py --uninstall` (keeping `~/.defusion/config.toml`), and `caveats` telling the user to tick "Run on Startup" for De-Fusion
+  `https://github.com/securityvoid/de-fusion-mcp/releases/download/v#{version}/de-fusion-mcp-#{version}.tar.gz`, `sha256`, `name`, `desc "Model Context Protocol (MCP) server add-in for Autodesk Fusion CAD"` (so `brew search --desc` finds it by purpose), `homepage`,
+  `depends_on formula: "python@3.13"`, a `postflight_steps` block that runs `install.py` from the staged path with that Python (`run` with `must_succeed: true`; Homebrew 7 deprecates the `postflight` and `uninstall_preflight` blocks), an `uninstall_preflight_steps` block that runs
+  `install.py --uninstall` (keeping `~/.defusion/config.toml`; `run` with `must_succeed: false`, so a non-zero exit, e.g. 3 for a manual-install link the cask does not own, is reported but does not block `brew uninstall`), and `caveats` telling the user to tick "Run on Startup" for De-Fusion
   in Fusion (Utilities > Add-Ins) and to use the "De-Fusion Setup" button to write MCP client configs.
-  - _Acceptance_: the rendered cask has every stanza above; `ruby -c` passes when `ruby` exists.
+  - _Acceptance_: the rendered cask has every stanza above; `ruby -c` passes when `ruby` exists; the template has the desc above, `postflight_steps do` (`must_succeed: true`), `uninstall_preflight_steps do` (`must_succeed: false`), and neither `postflight do` nor `uninstall_preflight do`.
 - **REQ-RELEASE-006**: `install.py` shall repoint an existing AddIns `De-Fusion` symlink that points to a different checkout
   (stale cask version, including a dangling target) instead of exiting 3; any other existing entry (a real directory, file, or
   symlink whose target's final component is not `De-Fusion`) shall still exit 3 untouched. `--uninstall` behaviour is unchanged.
@@ -53,6 +53,8 @@ notarization, other taps, autostart automation.
 - **REQ-RELEASE-008**: `tests/test_release.py` shall check, by plain text assertions (no YAML parser is in `requirements.lock`; no dependency is added), `release.yml`
   per REQ-RELEASE-002, -004 and NFR-RELEASE-001, the template per REQ-RELEASE-005, and `LICENSE`/README per REQ-RELEASE-001, without network.
   - _Acceptance_: `pytest -q tests/test_release.py` passes; removing `gh release create` from the workflow fails it.
+- **REQ-RELEASE-009**: The README `Install` section shall lead with `brew install --cask securityvoid/tap/de-fusion-mcp` (the tap is implicit in the full name), then tell the user to tick "Run on Startup" for De-Fusion in Utilities > Add-Ins and use the "De-Fusion Setup" button; `python install.py` stays, labelled the manual route, with the Python prerequisite, the `install.py` description, flags, exit codes and the restart paragraph kept under that label; uninstall via `brew uninstall --cask de-fusion-mcp` (`config.toml` kept).
+  - _Acceptance_: `tests/test_readme.py` asserts the README contains `brew install --cask securityvoid/tap/de-fusion-mcp`, `brew uninstall --cask de-fusion-mcp` and `Run on Startup`, and that the brew install line precedes `python install.py`.
 
 ## Non-Functional Requirements
 - **NFR-RELEASE-001**: Users need no token to install; the release step uses only `GITHUB_TOKEN`; `HOMEBREW_TAP_TOKEN` is a

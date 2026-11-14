@@ -10,6 +10,19 @@ can also read the modelling guide with `script.design_guide`.
 
 ## Install
 
+On macOS, Homebrew does the heavy lifting:
+
+```
+brew install --cask securityvoid/tap/de-fusion-mcp
+```
+
+Then, in Fusion, open Utilities > Add-Ins and tick "Run on Startup" for De-Fusion (brew cannot tick it
+for you; it has no thumbs). Use the "De-Fusion Setup" button to write your MCP client configs.
+
+To remove it: `brew uninstall --cask de-fusion-mcp`. Your `config.toml` stays put.
+
+### Manual route
+
 You need Python 3.10 or newer outside Fusion, and Fusion installed (macOS or Windows).
 
 ```

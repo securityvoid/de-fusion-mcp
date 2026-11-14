@@ -27,13 +27,30 @@ Legend: `- [ ]` open, `- [x]` done. Run every command from the repository root. 
   - _Reuse_: `install.is_our_link`, `make_link`, `remove_link`, `conflict`; fixture `env`.
   - _Verify_: `pytest -q tests/test_install.py`
 
-## Phase 3 — Validation
+## Phase 3 — Brew documentation and cask update
+- [x] **TASK-RELEASE-010** [REQ-RELEASE-005, REQ-RELEASE-008]: Cask desc
+  - Set `desc` in `packaging/de-fusion-mcp.rb.tmpl` to `Model Context Protocol (MCP) server add-in for Autodesk Fusion CAD`; assert the exact string in `test_template_has_required_stanzas` in `tests/test_release.py`.
+  - _Output_: `packaging/de-fusion-mcp.rb.tmpl`, `tests/test_release.py`
+  - _Reuse_: none.
+  - _Verify_: `pytest -q tests/test_release.py -k template`
+- [x] **TASK-RELEASE-011** [REQ-RELEASE-005, REQ-RELEASE-008]: Steps DSL
+  - Replace the `postflight` and `uninstall_preflight` blocks in the template with `postflight_steps` / `uninstall_preflight_steps` per § 4; update the template test (assertions per § 6).
+  - _Output_: `packaging/de-fusion-mcp.rb.tmpl`, `tests/test_release.py`
+  - _Reuse_: none.
+  - _Verify_: `pytest -q tests/test_release.py -k template`
+- [x] **TASK-RELEASE-009** [REQ-RELEASE-009]: README brew install
+  - Rewrite the `Install` section of `README.md` per REQ-RELEASE-009 (brew first, then Run on Startup and De-Fusion Setup, `python install.py` labelled manual, brew uninstall); add the assertions to `tests/test_readme.py`.
+  - _Output_: `README.md`, `tests/test_readme.py`
+  - _Reuse_: `section()` helper in `tests/test_readme.py`.
+  - _Verify_: `pytest -q tests/test_readme.py`
+
+## Phase 4 — Validation
 - [ ] **TASK-RELEASE-008** [REQ-RELEASE-002]: One-time external setup (operator task; only the operator can do these)
   - (1) Make `securityvoid/de-fusion-mcp` public. (2) `securityvoid/homebrew-tap` already exists, is public and has `main` with `Casks/` (verified); nothing to create. (3) Create a fine-grained PAT (Contents read/write, tap only) and add it as repository secret `HOMEBREW_TAP_TOKEN` in `securityvoid/de-fusion-mcp`.
   - _Output_: none
   - _Reuse_: none.
   - _Verify_: `gh repo view securityvoid/de-fusion-mcp --json visibility` and `gh secret list -R securityvoid/de-fusion-mcp` list the repo as public and the secret
-- [ ] **TASK-RELEASE-005** [REQ-RELEASE-001..008]: Full suite
+- [ ] **TASK-RELEASE-005** [REQ-RELEASE-001..009]: Full suite
   - Run the whole suite; do the post-merge smoke of § 6 (human, listed for the operator; depends on TASK-RELEASE-008).
   - _Output_: none
   - _Reuse_: none.

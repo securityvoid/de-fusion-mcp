@@ -9,3 +9,7 @@
 | 0.1.4 | 2026-11-12 | C4-r1-1..3: bot git identity before commit, `$GITHUB_ENV`, test names match `-k` |
 | 0.1.5 | 2026-11-12 | C4-r2-1..3: operator setup task TASK-RELEASE-008, `git add` path and no-change exit, install() replacement block |
 | 0.1.6 | 2026-11-13 | Design §5 `is_stale_link`: drop `not WINDOWS and` (is_symlink is False for junctions) (V1-r2-1, V3-r1-2) |
+| 0.2.0 | 2026-11-14 | REQ-RELEASE-009 (README brew install), REQ-RELEASE-005 desc and `postflight_steps`/`uninstall_preflight_steps`, TASK-RELEASE-009..011 |
+| 0.2.2 | 2026-11-14 | C1-r1-1, C2-r1-1: `uninstall_preflight_steps` `must_succeed: false`; C1-r1-2: design §1 Files list |
+| 0.2.3 | 2026-11-14 | C4-r1-1: test_readme.py asserts on `section("Install")`, order by `str.index`; C4-r1-2: REQ-RELEASE-009 keeps manual-route prerequisite, flags, exit codes, restart paragraph |
+| 0.2.4 | 2026-11-14 | V3-r1-1, V3-r1-2: design §4 steps DSL and TASK-RELEASE-011 no longer repeat REQ-RELEASE-005 / §6 |
