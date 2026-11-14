@@ -42,4 +42,4 @@ def test_install_section_leads_with_brew():
     s = section("Install")
     brew = "brew install --cask securityvoid/tap/de-fusion-mcp"
     assert brew in s and "brew uninstall --cask de-fusion-mcp" in s and "Run on Startup" in s
-    assert s.index(brew) < s.index("python install.py")
+    assert s.index(brew) < s.index("python install.py") and "--copy" in s

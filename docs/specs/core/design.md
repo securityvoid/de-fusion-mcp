@@ -603,7 +603,7 @@ else, including a header that fails to decode, with 401 JSON
   length unit squared/cubed. Keys carry no unit suffix; the envelope's `units` field states them.
 
 ## 9. Installer (`install.py`)
-Run with any Python ≥ 3.10 outside Fusion: `python install.py [--uninstall] [--fusion-python PATH]
+Run with any Python ≥ 3.10 outside Fusion: `python install.py [--uninstall] [--copy] [--fusion-python PATH]
 [--folder PATH]` (`--help` prints these flags and the exit codes). Exit codes: 0 success, 1 pip
 failed or missing/older than 22.3, 2 Fusion Python not found, 3 link conflict, 4 invalid `--folder` (checked first, before
 any other step: `norm(value)` empty → `--folder needs a project-qualified path like
@@ -632,7 +632,7 @@ Project/Folder`).
    (macOS `~/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns/De-Fusion`,
    Windows `%APPDATA%\Autodesk\Autodesk Fusion 360\API\AddIns\De-Fusion`): a symlink on macOS, a
    directory junction on Windows. An existing correct link is kept; a symlink whose target's final component is `De-Fusion` is
-   repointed to this checkout and install continues (REQ-RELEASE-006); anything else at that path
+   repointed to this checkout and install continues (REQ-RELEASE-006); with `--copy` the entry is a marked directory copy instead and an existing marked copy is replaced (REQ-RELEASE-010); anything else at that path
    stops the installer (exit 3) with `<path> exists and is not the De-Fusion link; remove it and
    rerun install.py`.
 4. Writes `config.toml` with the § 6.1 content if absent.
@@ -646,7 +646,7 @@ Project/Folder`).
    `http://127.0.0.1:<port>/mcp?folder=<urllib.parse.quote("/".join(norm(folder)), safe="")>` and
    the last line reads `Append &profile=<items> to the url to select a profile.` `--folder` only
    changes the printed url; it does not write `config.toml`.
-`--uninstall` removes the link, `lib/` and any `lib.tmp-*`; it keeps `config.toml`.
+`--uninstall` removes the link (or a marked copy, REQ-RELEASE-010), `lib/` and any `lib.tmp-*`; it keeps `config.toml`.
 
 The manifest sets `runOnStartup: true`, so after install the add-in loads with Fusion and appears
 once in Scripts and Add-Ins as `De-Fusion`. Users must not also add the repo path with "+".

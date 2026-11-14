@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -350,3 +351,111 @@ def test_link_to_other_name_exits_3_untouched(env, tmp_path):
     os.symlink(other, env.link)
     assert install.main([]) == 3
     assert os.readlink(env.link) == str(other)
+
+
+def _marked_copy(env, extra=()):
+    env.link.mkdir(parents=True)
+    (env.link / install.MARKER).write_text("")
+    for name in extra:
+        (env.link / name).write_text("old")
+
+
+def test_copy_installs_marked_real_directory_with_lib(env):
+    env.build("b", 1)
+    (env.root / "De-Fusion" / "__pycache__").mkdir()
+    (env.root / "De-Fusion" / "__pycache__" / "x.pyc").write_text("x")
+    assert install.main(["--copy"]) == 0
+    assert env.link.is_dir() and not env.link.is_symlink()
+    assert (env.link / install.MARKER).is_file() and (env.link / "lib" / "pkg.txt").read_text() == "new"
+    assert not list(env.link.glob("lib.tmp-*")) and not (env.link / "__pycache__").exists()
+
+
+def test_make_copy_skips_lib_tmp(env):
+    (env.root / "De-Fusion" / "lib.tmp-1").mkdir()
+    install.make_copy(env.link)
+    assert (env.link / install.MARKER).is_file() and not (env.link / "lib.tmp-1").exists()
+
+
+def test_copy_replaces_marked_copy_and_stale_link(env, tmp_path):
+    env.build("b", 1)
+    _marked_copy(env, ["old.txt"])
+    assert install.main(["--copy"]) == 0
+    assert not (env.link / "old.txt").exists() and (env.link / install.MARKER).is_file()
+    shutil.rmtree(env.link)
+    old = tmp_path / "old" / "De-Fusion"
+    old.mkdir(parents=True)
+    os.symlink(old, env.link)
+    assert install.main(["--copy"]) == 0
+    assert env.link.is_dir() and not env.link.is_symlink() and (env.link / install.MARKER).is_file()
+
+
+def test_copy_unmarked_directory_other_link_and_file_exit_3_untouched(env, tmp_path):
+    env.build("b", 1)
+    env.link.mkdir(parents=True)
+    (env.link / "keep.txt").write_text("x")
+    assert install.main(["--copy"]) == 3
+    assert (env.link / "keep.txt").read_text() == "x" and not (env.link / install.MARKER).exists()
+    shutil.rmtree(env.link)
+    other = tmp_path / "other"
+    other.mkdir()
+    os.symlink(other, env.link)
+    assert install.main(["--copy"]) == 3
+    assert os.readlink(env.link) == str(other)
+    env.link.unlink()
+    env.link.write_text("file")
+    assert install.main(["--copy"]) == 3
+    assert env.link.read_text() == "file"
+
+
+def test_uninstall_removes_marked_copy_keeps_config_and_refuses_unmarked(env):
+    env.build("b", 1)
+    assert install.main(["--copy"]) == 0
+    assert install.main(["--uninstall"]) == 0
+    assert not env.link.exists() and env.cfg.exists()
+    env.link.mkdir()
+    assert install.main(["--uninstall"]) == 3
+    assert env.link.is_dir()
+
+
+def test_copy_failing_copytree_exits_1_and_next_run_replaces_partial(env, monkeypatch, capsys):
+    env.build("b", 1)
+    _marked_copy(env, ["old.txt"])
+    real = shutil.copytree
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(install.shutil, "copytree", boom)
+    assert install.main(["--copy"]) == 1
+    assert "close Fusion and rerun install.py" in capsys.readouterr().err
+    assert (env.link / install.MARKER).is_file()
+    monkeypatch.setattr(install.shutil, "copytree", real)
+    assert install.main(["--copy"]) == 0
+    assert (env.link / "lib" / "pkg.txt").is_file()
+
+
+def test_copy_and_uninstall_failing_removal_keep_marker(env, monkeypatch, capsys):
+    env.build("b", 1)
+    assert install.main(["--copy"]) == 0
+    real = shutil.rmtree
+    calls = []
+
+    def flaky(path, *a, **k):  # removes part of the tree, then fails
+        calls.append(path)
+        real(path)
+        raise OSError("locked")
+
+    monkeypatch.setattr(install.shutil, "rmtree", flaky)
+    assert install.main(["--copy"]) == 1
+    assert "close Fusion and rerun install.py" in capsys.readouterr().err
+    assert install.main(["--uninstall"]) == 1
+    assert "close Fusion and rerun install.py" in capsys.readouterr().err
+    assert calls and (env.link / install.MARKER).is_file() and not (env.link / calls[0].name).exists()
+    monkeypatch.setattr(install.shutil, "rmtree", real)
+    assert install.main(["--copy"]) == 0
+
+
+def test_help_lists_copy(capsys):
+    with pytest.raises(SystemExit):
+        install.main(["--help"])
+    assert "--copy" in capsys.readouterr().out

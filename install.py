@@ -1,7 +1,7 @@
 """Install De-Fusion into Autodesk Fusion (design § 9).
 
 Run with any Python >= 3.10 outside Fusion:
-    python install.py [--uninstall] [--fusion-python PATH] [--folder PATH]
+    python install.py [--uninstall] [--copy] [--fusion-python PATH] [--folder PATH]
 """
 import argparse
 import ast
@@ -110,6 +110,30 @@ def remove_link(link):
         link.unlink()
 
 
+MARKER = ".de-fusion-copy"
+
+
+def is_our_copy(link):
+    return link.is_dir() and not link.is_symlink() and (link / MARKER).is_file()
+
+
+def remove_entry(link):
+    if not is_our_copy(link):
+        return remove_link(link)
+    for child in link.iterdir():  # the marker goes last, so a failed removal leaves a marked entry
+        if child.name != MARKER:
+            shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
+    (link / MARKER).unlink()
+    link.rmdir()
+
+
+def make_copy(link):
+    link.mkdir(parents=True, exist_ok=True)
+    (link / MARKER).write_text("")
+    shutil.copytree(ROOT / "De-Fusion", link, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("lib.tmp-*", "__pycache__"))
+
+
 def conflict(link):
     print("%s exists and is not the De-Fusion link; remove it and rerun install.py" % link, file=sys.stderr)
     return 3
@@ -149,16 +173,20 @@ def clear_tmp():
 def uninstall():
     link = link_path()
     if link.is_symlink() or link.exists():
-        if not is_our_link(link):
+        if not (is_our_link(link) or is_our_copy(link)):
             return conflict(link)
-        remove_link(link)
+        try:
+            remove_entry(link)
+        except OSError:
+            print("close Fusion and rerun install.py", file=sys.stderr)
+            return 1
     shutil.rmtree(ROOT / "De-Fusion" / "lib", ignore_errors=True)
     clear_tmp()
     print("Removed the De-Fusion link, lib/ and lib.tmp-*; kept %s" % (config_dir() / "config.toml"))
     return 0
 
 
-def install(fusion_python, folder=None):
+def install(fusion_python, folder=None, copy=False):
     python, searched = find_fusion_python(fusion_python)
     if not python or not Path(python).exists():
         print("Fusion Python not found. Searched:\n  " + "\n  ".join(searched) + "\nUse --fusion-python PATH.", file=sys.stderr)
@@ -193,7 +221,18 @@ def install(fusion_python, folder=None):
         print("rerun install.py", file=sys.stderr)
         return 1
     link = link_path()
-    if link.is_symlink() or link.exists():
+    exists = link.is_symlink() or link.exists()
+    if copy:
+        if exists and not (is_our_copy(link) or is_our_link(link) or is_stale_link(link)):
+            return conflict(link)
+        try:
+            if exists:
+                remove_entry(link)
+            make_copy(link)
+        except OSError:
+            print("close Fusion and rerun install.py", file=sys.stderr)
+            return 1
+    elif exists:
         if not is_our_link(link):
             if not is_stale_link(link):
                 return conflict(link)
@@ -226,6 +265,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="install.py", description="Install De-Fusion into Autodesk Fusion.",
                                  epilog=EXIT_CODES, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--uninstall", action="store_true", help="remove the link, lib/ and lib.tmp-*; keep config.toml")
+    ap.add_argument("--copy", action="store_true", help="install a copy of De-Fusion instead of a link")
     ap.add_argument("--fusion-python", metavar="PATH", help="Fusion's Python instead of the newest discovered one")
     ap.add_argument("--folder", metavar="PATH",
                     help="print the url with ?folder=PATH (a folder limit like Project/Folder); "
@@ -234,7 +274,7 @@ def main(argv=None):
     if args.folder is not None and not norm(args.folder):
         print("--folder needs a project-qualified path like Project/Folder", file=sys.stderr)
         return 4
-    return uninstall() if args.uninstall else install(args.fusion_python, args.folder)
+    return uninstall() if args.uninstall else install(args.fusion_python, args.folder, args.copy)
 
 
 if __name__ == "__main__":

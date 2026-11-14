@@ -36,6 +36,7 @@ wheels match Fusion and a failed run keeps your old `lib/`), links `De-Fusion/` 
 folder, writes a default `config.toml` if you have none, and prints the `mcp.json` entry.
 
 - `--fusion-python PATH` uses that Python instead of the newest one it finds.
+- `--copy` installs a copy of De-Fusion into the AddIns folder instead of a link (the brew cask uses it, because Fusion lists a linked add-in twice).
 - `--uninstall` removes the link, `lib/` and any leftover `lib.tmp-*`. Your `config.toml` stays put, because we are not monsters.
 - `--folder "My Project/Parts"` prints the url with `?folder=My%20Project%2FParts` (see
   [Folder limit](#folder-limit)). It only changes the printed url; it does not write `config.toml`.

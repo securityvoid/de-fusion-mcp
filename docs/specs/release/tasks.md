@@ -44,13 +44,24 @@ Legend: `- [ ]` open, `- [x]` done. Run every command from the repository root. 
   - _Reuse_: `section()` helper in `tests/test_readme.py`.
   - _Verify_: `pytest -q tests/test_readme.py`
 
+- [x] **TASK-RELEASE-013** [REQ-RELEASE-010]: install.py --copy
+  - Implement § 5a in `install.py`; add the copy tests of § 6 to `tests/test_install.py`; add a `--copy` bullet to the README flag list and assert `--copy` in `tests/test_readme.py` (REQ-RELEASE-010).
+  - _Output_: `install.py`, `tests/test_install.py`, `README.md`, `tests/test_readme.py`
+  - _Reuse_: `is_our_link`, `is_stale_link`, `remove_link`, `conflict`; fixture `env`.
+  - _Verify_: `pytest -q tests/test_install.py -k copy && pytest -q tests/test_readme.py`
+- [x] **TASK-RELEASE-014** [REQ-RELEASE-005, REQ-RELEASE-010]: Cask passes --copy
+  - Add `"--copy"` to the `installer script:` args in `packaging/de-fusion-mcp.rb.tmpl`; assert it in `test_template_has_required_stanzas`.
+  - _Output_: `packaging/de-fusion-mcp.rb.tmpl`, `tests/test_release.py`
+  - _Reuse_: none.
+  - _Verify_: `pytest -q tests/test_release.py -k template`
+
 ## Phase 4 — Validation
 - [ ] **TASK-RELEASE-008** [REQ-RELEASE-002]: One-time external setup (operator task; only the operator can do these)
   - (1) Make `securityvoid/de-fusion-mcp` public. (2) `securityvoid/homebrew-tap` already exists, is public and has `main` with `Casks/` (verified); nothing to create. (3) Create a fine-grained PAT (Contents read/write, tap only) and add it as repository secret `HOMEBREW_TAP_TOKEN` in `securityvoid/de-fusion-mcp`.
   - _Output_: none
   - _Reuse_: none.
   - _Verify_: `gh repo view securityvoid/de-fusion-mcp --json visibility` and `gh secret list -R securityvoid/de-fusion-mcp` list the repo as public and the secret
-- [ ] **TASK-RELEASE-005** [REQ-RELEASE-001..009]: Full suite
+- [ ] **TASK-RELEASE-005** [REQ-RELEASE-001..010]: Full suite
   - Run the whole suite; do the post-merge smoke of § 6 (human, listed for the operator; depends on TASK-RELEASE-008).
   - _Output_: none
   - _Reuse_: none.

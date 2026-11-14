@@ -15,3 +15,5 @@
 | 0.5.0 | 2026-11-12 | Re-lock registry: `guard.UNLOCKED` (data file id → name) added by `ensure_editable` when Make Editable is issued, removed when `set_read_only` observes locked or `close` drops the document (§ 5.13); folder-limit scope names `datafile_upload` and the `close` re-lock; REQ-CORE-056; TASK-CORE-031; `Axis` sketch-line form `{"sketch", "line"}` and `Profile` multi-sketch entry list (§ 5.4; REQ-CORE-057, REQ-CORE-058; REQ-CORE-018, REQ-CORE-019 amended; TASK-CORE-032) |
 | 0.6.0 | 2026-11-12 | Installer runs pip from `sys.executable` with `--python <fusion python>` (pip 22.3+, exit 1 with message if missing/older), builds `lib/` in `lib.tmp-<pid>` and replaces `lib/` only on success; `--uninstall` also removes `lib.tmp-*` (§ 9 step 2); REQ-CORE-038 amended; TASK-CORE-033 |
 | 0.6.1 | 2026-11-12 | Installer repoints a stale `De-Fusion` symlink (REQ-RELEASE-006): requirements install bullet, § 9 step 3 (C1 r2) |
+| 0.6.2 | 2026-11-14 | Installer `--copy` (REQ-RELEASE-010): § 9 usage, step 3, `--uninstall`; REQ-CORE-038 flag list (C1-r1-1) |
+| 0.6.3 | 2026-11-14 | C1-r2-2: REQ-CORE-038 and REQ-CORE-039 cite REQ-RELEASE-010 |

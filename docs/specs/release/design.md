@@ -6,8 +6,8 @@ Tag `v0.1.0` -> `release.yml` -> tarball -> `render_cask.py` -> GitHub release -
 `securityvoid/homebrew-tap` -> `brew install --cask securityvoid/tap/de-fusion-mcp`.
 
 Files: `LICENSE` (REQ-001), `README.md` (REQ-001, -009), `tests/test_readme.py` (REQ-009), `.github/workflows/release.yml` (REQ-002, -004, NFR-RELEASE-001),
-`scripts/render_cask.py` (REQ-003), `packaging/de-fusion-mcp.rb.tmpl` (REQ-003, -005), `install.py` (REQ-006),
-`tests/test_render_cask.py` (REQ-007), `tests/test_release.py` (REQ-008), `tests/test_install.py` (REQ-006, append).
+`scripts/render_cask.py` (REQ-003), `packaging/de-fusion-mcp.rb.tmpl` (REQ-003, -005), `install.py` (REQ-006, -010),
+`tests/test_render_cask.py` (REQ-007), `tests/test_release.py` (REQ-008), `tests/test_install.py` (REQ-006, -010, append).
 
 ## 2. Reuse
 - `tests/test_install.py` fixture `env` (temp HOME, patched `install.ROOT`) for the repoint test.
@@ -41,7 +41,7 @@ cask "de-fusion-mcp" do
   depends_on formula: "python@3.13"
   installer script: {
     executable: "#{HOMEBREW_PREFIX}/opt/python@3.13/bin/python3.13",
-    args:       ["#{staged_path}/de-fusion-mcp-#{version}/install.py"],
+    args:       ["#{staged_path}/de-fusion-mcp-#{version}/install.py", "--copy"],
   }
   uninstall script: {
     executable:   "#{HOMEBREW_PREFIX}/opt/python@3.13/bin/python3.13",
@@ -81,11 +81,37 @@ if not is_our_link(link):
 ```
 `--uninstall` keeps `is_our_link`/`conflict` (never removes a link it does not own). `readlink` is used, not `resolve`, so dangling links work.
 
+## 5a. `install.py --copy`
+Fusion lists a symlinked add-in twice (its AddIns path and the resolved Caskroom path), so the cask installs a copy. Add to `install.py`:
+```python
+MARKER = ".de-fusion-copy"
+
+def is_our_copy(link):
+    return link.is_dir() and not link.is_symlink() and (link / MARKER).is_file()
+
+def remove_entry(link):
+    if not is_our_copy(link):
+        return remove_link(link)
+    for child in link.iterdir():  # the marker goes last, so a failed removal leaves a marked entry
+        if child.name != MARKER:
+            shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
+    (link / MARKER).unlink()
+    link.rmdir()
+
+def make_copy(link):
+    link.mkdir(parents=True, exist_ok=True)
+    (link / MARKER).write_text("")
+    shutil.copytree(ROOT / "De-Fusion", link, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("lib.tmp-*", "__pycache__"))
+```
+`main` gets `--copy` (`store_true`, help "install a copy of De-Fusion instead of a link") passed to `install(fusion_python, folder=None, copy=False)`. In `install()`, where the link is placed: when `copy`, an existing entry that is `is_our_copy`, `is_our_link` or `is_stale_link` is removed with `remove_entry`, any other existing entry returns `conflict(link)`, then `make_copy(link)` (the marker is written before the copy, so a partial copy is a marked entry the next run replaces); `remove_entry` and `make_copy` run in `try/except OSError` that prints `close Fusion and rerun install.py` to stderr and returns 1, as the `rmtree(lib)` step does, and so does the `remove_entry` call in `uninstall()`; without `copy` the code is unchanged. In `uninstall()` the test `is_our_link(link)` becomes `is_our_link(link) or is_our_copy(link)` and `remove_link(link)` becomes `remove_entry(link)`. The copy is made after `lib/` is built, so it contains `lib/`.
+
 ## 6. Tests
 - `test_render_cask.py`: run `scripts/render_cask.py` via `subprocess` with `sys.executable`; assertions per REQ-RELEASE-007 (url line keeps `v#{version}/de-fusion-mcp-#{version}.tar.gz`).
 - `test_release.py`: read text of `release.yml`, template, `LICENSE`, `README.md`; assertions per REQ-RELEASE-008. `release.yml`: no `x-access-token:` or `@github.com/`,
   secret passed via `token:`, `render_cask.py` precedes `gh release create`, every step running `gh ` sets `GH_TOKEN`, `HOMEBREW_TAP_TOKEN` appears only in the tap checkout step, `GITHUB_ENV` appears, both `git config` lines appear before `git commit`, `git add Casks/de-fusion-mcp.rb` precedes `git commit`. Template: assertions per REQ-RELEASE-005 acceptance; a stanza is the text from its `installer script:` / `uninstall script:` line to the next line starting `  }`. Include `ruby -c` on the rendered
   cask only when `shutil.which("ruby")`.
-- `test_readme.py`: `section("Install")` text (existing helper) contains `brew install --cask securityvoid/tap/de-fusion-mcp` before `python install.py` (`str.index` of the brew line < that of `python install.py`), `brew uninstall --cask de-fusion-mcp` and `Run on Startup` (REQ-RELEASE-009).
+- `test_install.py` copy additions (names contain `copy`): one test per case of the REQ-RELEASE-010 acceptance, plus removal raising `OSError` after deleting some children (not a stub that raises first).
+- `test_readme.py`: `section("Install")` text (existing helper) contains `--copy` and contains `brew install --cask securityvoid/tap/de-fusion-mcp` before `python install.py` (`str.index` of the brew line < that of `python install.py`), `brew uninstall --cask de-fusion-mcp` and `Run on Startup` (REQ-RELEASE-009).
 - `test_install.py` additions: stale live link, stale dangling link, real directory (exit 3, untouched), link to `other` (exit 3).
 - Post-merge smoke (human): tag `v0.1.0`; confirm release asset, tap commit, `brew install --cask securityvoid/tap/de-fusion-mcp`.

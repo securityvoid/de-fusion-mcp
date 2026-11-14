@@ -11,7 +11,7 @@ runs `install.py`. Section references (§) point to `docs/specs/release/design.m
 first tag `v0.1.0`, upgrades repoint Fusion's `De-Fusion` link.
 
 ## Dependencies
-- **DEP-RELEASE-001**: `install.py` (`--uninstall`, Fusion Python discovery, pip >= 22.3 probe, AddIns link),
+- **DEP-RELEASE-001**: `install.py` (`--uninstall`, `--copy`, Fusion Python discovery, pip >= 22.3 probe, AddIns link),
   specified in `docs/specs/core/` and `docs/specs/setup/`.
 
 ## Functional Requirements
@@ -36,15 +36,17 @@ first tag `v0.1.0`, upgrades repoint Fusion's `De-Fusion` link.
     `Casks/de-fusion-mcp.rb` and `git push`, `token: ${{ secrets.HOMEBREW_TAP_TOKEN }}`, and no `x-access-token:` or `@github.com/`; the tap token is not used in the release step; it renders before `gh release create`.
 - **REQ-RELEASE-005**: Cask `de-fusion-mcp` shall be macOS only (no version minimum), with url
   `https://github.com/securityvoid/de-fusion-mcp/releases/download/v#{version}/de-fusion-mcp-#{version}.tar.gz`, `sha256`, `name`, `desc "Model Context Protocol (MCP) server add-in for Autodesk Fusion CAD"` (so `brew search --desc` finds it by purpose), `homepage`,
-  `depends_on formula: "python@3.13"`, an `installer script:` stanza that runs `install.py` from the staged path with that Python, an `uninstall script:` stanza that runs
+  `depends_on formula: "python@3.13"`, an `installer script:` stanza that runs `install.py --copy` from the staged path with that Python, an `uninstall script:` stanza that runs
   `install.py --uninstall` (keeping `~/.defusion/config.toml`; `must_succeed: false`, so a non-zero exit, e.g. 3 for a manual-install link the cask does not own, is reported but does not block `brew uninstall`), and `caveats` telling the user to tick "Run on Startup" for De-Fusion
   in Fusion (Utilities > Add-Ins) and to use the "De-Fusion Setup" button to write MCP client configs.
-  - _Acceptance_: the rendered cask has every stanza above; `ruby -c` passes when `ruby` exists; the template has the desc above, `installer script:` (running `install.py`), `uninstall script:` (`--uninstall`, `must_succeed: false`), no `must_succeed: false` in the installer stanza (a non-zero `install.py` exit fails `brew install`), no `sudo` anywhere (both run as the user), and none of `postflight`, `uninstall_preflight`.
+  - _Acceptance_: the rendered cask has every stanza above; `ruby -c` passes when `ruby` exists; the template has the desc above, `installer script:` (running `install.py` with `--copy`), `uninstall script:` (`--uninstall`, `must_succeed: false`), no `must_succeed: false` in the installer stanza (a non-zero `install.py` exit fails `brew install`), no `sudo` anywhere (both run as the user), and none of `postflight`, `uninstall_preflight`.
 - **REQ-RELEASE-006**: `install.py` shall repoint an existing AddIns `De-Fusion` symlink that points to a different checkout
   (stale cask version, including a dangling target) instead of exiting 3; any other existing entry (a real directory, file, or
   symlink whose target's final component is not `De-Fusion`) shall still exit 3 untouched. `--uninstall` behaviour is unchanged.
   - _Acceptance_: a link to another dir named `De-Fusion` (live or dangling) ends pointing at the current `ROOT/De-Fusion`
     with exit 0; a real directory and a link to a dir named `other` leave the entry unchanged and exit 3.
+- **REQ-RELEASE-010**: `install.py --copy` shall install `De-Fusion/` into the AddIns folder as a real directory copy (without `lib.tmp-*` and `__pycache__`) holding an empty marker file `.de-fusion-copy`, instead of a symlink, because Fusion registers a symlink's resolved path as a second add-in. With `--copy` an existing marked copy or `De-Fusion` symlink (REQ-RELEASE-006) is replaced; any other existing entry exits 3 untouched. `--uninstall` also removes a marked copy and still refuses any other real directory. A failed copy or removal (an `OSError`) prints `close Fusion and rerun install.py` and exits 1; a partial copy always holds the marker, so the next run replaces it. Without `--copy` behaviour is unchanged. The README flag list names `--copy`.
+  - _Acceptance_: with `--copy` the AddIns entry is a real directory with the marker, `lib/` and no `lib.tmp-*`, and a second run (marked copy) and a run over a stale symlink both end with a fresh marked copy and exit 0; an unmarked directory exits 3 untouched; `--uninstall` removes a marked copy, keeps `config.toml`, and exits 3 on an unmarked directory; a symlink to a directory named `other` and a regular file at the path exit 3 untouched; a failing `copytree` or `rmtree` exits 1 with the message above, leaves a marked entry the next `--copy` run replaces, and `--uninstall` with a failing `rmtree` exits 1; the README `Install` section contains `--copy`.
 - **REQ-RELEASE-007**: `tests/test_render_cask.py` shall cover REQ-RELEASE-003 (substitution of version, sha256 and the url (the url line stays
   `...v#{version}/de-fusion-mcp-#{version}.tar.gz`, only `@VERSION@`/`@SHA256@` replaced), no leftover
   `@VERSION@`/`@SHA256@`, stable output, invalid inputs), without network.

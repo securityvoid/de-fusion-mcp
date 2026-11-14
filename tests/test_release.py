@@ -28,6 +28,7 @@ def test_template_has_required_stanzas():
     assert 'desc "Model Context Protocol (MCP) server add-in for Autodesk Fusion CAD"' in text
     installer = text.split("installer script:", 1)[1].split("\n  }", 1)[0]
     assert "opt/python@3.13/bin/python3.13" in installer and "install.py" in installer
+    assert "--copy" in installer
     assert "--uninstall" not in installer and "must_succeed" not in installer
     assert "sudo" not in text
     uninstall = text.split("uninstall script:", 1)[1].split("\n  }", 1)[0]

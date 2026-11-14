@@ -323,11 +323,11 @@ installer, the live test harness and README.md. Tool actions are specified by th
   override, exit 2 listing searched paths when not found), install `requirements.lock` into a temp
   `De-Fusion/lib.tmp-<pid>` with pip run from `sys.executable` (pip 22.3+) and swap it in for `lib/`
   per core design § 9 step 2 (pip probe, stale and failure-path temp cleanup, old-`lib` removal and
-  rename failures), and create exactly one link (macOS symlink, Windows directory junction) at
+  rename failures), and create exactly one link (or, with `--copy`, a marked directory copy, REQ-RELEASE-010) (macOS symlink, Windows directory junction) at
   Fusion's AddIns `De-Fusion` path, keeping a correct existing link, repointing a symlink whose target's final component is `De-Fusion`
   (REQ-RELEASE-006), and stopping with exit 3 and a message
   naming the path and saying to remove it if anything else is there. Flags and exit codes are those of
-  § 9: `--fusion-python PATH`, `--uninstall`, `--folder PATH`, `--help`; exit 0 success, 1 pip failed or
+  § 9: `--fusion-python PATH`, `--uninstall`, `--copy` (REQ-RELEASE-010), `--folder PATH`, `--help`; exit 0 success, 1 pip failed or
   missing/older than 22.3, 2 Fusion Python not found, 3 link conflict, 4 invalid `--folder`
   (§ 9 steps 1–3).
   - _Acceptance_: Unit tests with temp dirs: the newest of two fake builds is chosen; none found →
@@ -347,10 +347,10 @@ installer, the live test harness and README.md. Tool actions are specified by th
   with the configured port, the `mcp.json` entry `{"mcpServers": {"de-fusion": {"type": "http", "url":
   "http://127.0.0.1:<port>/mcp"}}}` plus a `headers` line when a token is configured and how to add
   `?profile=`, with `?folder=<URL-encoded folder>` on the url (and `&profile=` in the hint) when
-  `--folder` or the config `folder` is set (`--folder` wins, § 9 step 5); `--uninstall` shall remove the link, `lib/` and any `lib.tmp-*` and keep `config.toml` (§ 9 steps
+  `--folder` or the config `folder` is set (`--folder` wins, § 9 step 5); `--uninstall` shall remove the link (or a marked copy, REQ-RELEASE-010), `lib/` and any `lib.tmp-*` and keep `config.toml` (§ 9 steps
   4–5).
   - _Acceptance_: Unit tests: an existing config is not overwritten; output contains the JSON and,
-    with a token, `Authorization: Bearer`; `--uninstall` removes the link, `lib/` and `lib.tmp-*` and leaves only `config.toml`; `--folder
+    with a token, `Authorization: Bearer`; `--uninstall` removes the link (or a marked copy, REQ-RELEASE-010), `lib/` and `lib.tmp-*` and leaves only `config.toml`; `--folder
     "My Project/Parts"` prints url `http://127.0.0.1:8642/mcp?folder=My%20Project%2FParts` and
     `Append &profile=`; config `folder = "P"` without `--folder` prints `?folder=P`; with neither the
     url has no query.
