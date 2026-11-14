@@ -13,3 +13,8 @@
 | 0.2.2 | 2026-11-14 | C1-r1-1, C2-r1-1: `uninstall_preflight_steps` `must_succeed: false`; C1-r1-2: design §1 Files list |
 | 0.2.3 | 2026-11-14 | C4-r1-1: test_readme.py asserts on `section("Install")`, order by `str.index`; C4-r1-2: REQ-RELEASE-009 keeps manual-route prerequisite, flags, exit codes, restart paragraph |
 | 0.2.4 | 2026-11-14 | V3-r1-1, V3-r1-2: design §4 steps DSL and TASK-RELEASE-011 no longer repeat REQ-RELEASE-005 / §6 |
+| 0.3.0 | 2026-11-14 | REQ-RELEASE-005: `installer script:` / `uninstall script:` replace `*_steps` (sandboxed without real home, so `install.py` cannot run); TASK-RELEASE-012 replaces TASK-RELEASE-011 |
+| 0.3.1 | 2026-11-14 | C1-r1-1: TASK-RELEASE-002 template-test parenthetical points to § 6 |
+| 0.3.2 | 2026-11-14 | C2-r1-1, C2-r1-2: installer stanza keeps default `must_succeed`, no `sudo` (acceptance and § 6) |
+| 0.3.3 | 2026-11-14 | spec-lint out-of-scope (REQ-CLI-055/056): Operator ask sentence and `## Out of Scope` section removed |
+| 0.3.4 | 2026-11-14 | C4-r1-1..3: TASK-RELEASE-012 in Phase 3, § 6 stanza delimiter, sandbox rationale once (design § 4) |

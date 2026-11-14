@@ -8,8 +8,7 @@ runs `install.py`. Section references (§) point to `docs/specs/release/design.m
 
 ## Operator ask
 2026-11-12: Homebrew cask via a release workflow (no GoReleaser), MIT license, source repo public,
-first tag `v0.1.0`, upgrades repoint Fusion's `De-Fusion` link. Out of scope: Windows, signing and
-notarization, other taps, autostart automation.
+first tag `v0.1.0`, upgrades repoint Fusion's `De-Fusion` link.
 
 ## Dependencies
 - **DEP-RELEASE-001**: `install.py` (`--uninstall`, Fusion Python discovery, pip >= 22.3 probe, AddIns link),
@@ -37,10 +36,10 @@ notarization, other taps, autostart automation.
     `Casks/de-fusion-mcp.rb` and `git push`, `token: ${{ secrets.HOMEBREW_TAP_TOKEN }}`, and no `x-access-token:` or `@github.com/`; the tap token is not used in the release step; it renders before `gh release create`.
 - **REQ-RELEASE-005**: Cask `de-fusion-mcp` shall be macOS only (no version minimum), with url
   `https://github.com/securityvoid/de-fusion-mcp/releases/download/v#{version}/de-fusion-mcp-#{version}.tar.gz`, `sha256`, `name`, `desc "Model Context Protocol (MCP) server add-in for Autodesk Fusion CAD"` (so `brew search --desc` finds it by purpose), `homepage`,
-  `depends_on formula: "python@3.13"`, a `postflight_steps` block that runs `install.py` from the staged path with that Python (`run` with `must_succeed: true`; Homebrew 7 deprecates the `postflight` and `uninstall_preflight` blocks), an `uninstall_preflight_steps` block that runs
-  `install.py --uninstall` (keeping `~/.defusion/config.toml`; `run` with `must_succeed: false`, so a non-zero exit, e.g. 3 for a manual-install link the cask does not own, is reported but does not block `brew uninstall`), and `caveats` telling the user to tick "Run on Startup" for De-Fusion
+  `depends_on formula: "python@3.13"`, an `installer script:` stanza that runs `install.py` from the staged path with that Python, an `uninstall script:` stanza that runs
+  `install.py --uninstall` (keeping `~/.defusion/config.toml`; `must_succeed: false`, so a non-zero exit, e.g. 3 for a manual-install link the cask does not own, is reported but does not block `brew uninstall`), and `caveats` telling the user to tick "Run on Startup" for De-Fusion
   in Fusion (Utilities > Add-Ins) and to use the "De-Fusion Setup" button to write MCP client configs.
-  - _Acceptance_: the rendered cask has every stanza above; `ruby -c` passes when `ruby` exists; the template has the desc above, `postflight_steps do` (`must_succeed: true`), `uninstall_preflight_steps do` (`must_succeed: false`), and neither `postflight do` nor `uninstall_preflight do`.
+  - _Acceptance_: the rendered cask has every stanza above; `ruby -c` passes when `ruby` exists; the template has the desc above, `installer script:` (running `install.py`), `uninstall script:` (`--uninstall`, `must_succeed: false`), no `must_succeed: false` in the installer stanza (a non-zero `install.py` exit fails `brew install`), no `sudo` anywhere (both run as the user), and none of `postflight`, `uninstall_preflight`.
 - **REQ-RELEASE-006**: `install.py` shall repoint an existing AddIns `De-Fusion` symlink that points to a different checkout
   (stale cask version, including a dangling target) instead of exiting 3; any other existing entry (a real directory, file, or
   symlink whose target's final component is not `De-Fusion`) shall still exit 3 untouched. `--uninstall` behaviour is unchanged.
@@ -60,7 +59,3 @@ notarization, other taps, autostart automation.
 - **NFR-RELEASE-001**: Users need no token to install; the release step uses only `GITHUB_TOKEN`; `HOMEBREW_TAP_TOKEN` is a
   fine-grained PAT with Contents read/write on the tap only.
   - _Acceptance_: no `brew` or `curl` step in the workflow or cask uses a credential; GH_TOKEN is set on the `gh release create` step only and HOMEBREW_TAP_TOKEN appears only in the tap checkout step.
-
-## Out of Scope
-Windows, signing and notarization, other taps, autostart automation (brew cannot tick Fusion's "Run on Startup"), GoReleaser,
-a `[project]` table in `pyproject.toml` (none exists, so no `license` field).

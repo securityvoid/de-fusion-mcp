@@ -10,7 +10,7 @@ Legend: `- [ ]` open, `- [x]` done. Run every command from the repository root. 
   - _Reuse_: none; no license file or release test exists.
   - _Verify_: `pytest -q tests/test_release.py -k license`; name the tests so they contain `license`
 - [x] **TASK-RELEASE-002** [REQ-RELEASE-003, REQ-RELEASE-005, REQ-RELEASE-007, REQ-RELEASE-008]: Template, renderer, tests
-  - Create `packaging/de-fusion-mcp.rb.tmpl` (§ 4) and `scripts/render_cask.py`; create `tests/test_render_cask.py`; add the template-stanza test (`depends_on :macos`, `must_succeed: true`) to `tests/test_release.py`.
+  - Create `packaging/de-fusion-mcp.rb.tmpl` (§ 4) and `scripts/render_cask.py`; create `tests/test_render_cask.py`; add the template-stanza test (assertions per § 6) to `tests/test_release.py`.
   - _Output_: `packaging/de-fusion-mcp.rb.tmpl`, `scripts/render_cask.py`, `tests/test_render_cask.py`, `tests/test_release.py`
   - _Reuse_: none; stdlib only.
   - _Verify_: `pytest -q tests/test_render_cask.py tests/test_release.py -k "render or template" && python3 scripts/render_cask.py 0.1.0 $(printf 'a%.0s' $(seq 64)) | grep -c 'v#{version}'`; name the tests so they contain `render` / `template`
@@ -33,8 +33,8 @@ Legend: `- [ ]` open, `- [x]` done. Run every command from the repository root. 
   - _Output_: `packaging/de-fusion-mcp.rb.tmpl`, `tests/test_release.py`
   - _Reuse_: none.
   - _Verify_: `pytest -q tests/test_release.py -k template`
-- [x] **TASK-RELEASE-011** [REQ-RELEASE-005, REQ-RELEASE-008]: Steps DSL
-  - Replace the `postflight` and `uninstall_preflight` blocks in the template with `postflight_steps` / `uninstall_preflight_steps` per § 4; update the template test (assertions per § 6).
+- [x] **TASK-RELEASE-012** [REQ-RELEASE-005, REQ-RELEASE-008]: Installer script stanzas
+  - Replace the `postflight_steps` / `uninstall_preflight_steps` blocks in the template with `installer script:` / `uninstall script:` per § 4; update the template test (assertions per § 6).
   - _Output_: `packaging/de-fusion-mcp.rb.tmpl`, `tests/test_release.py`
   - _Reuse_: none.
   - _Verify_: `pytest -q tests/test_release.py -k template`

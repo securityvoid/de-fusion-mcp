@@ -39,23 +39,22 @@ cask "de-fusion-mcp" do
   homepage "https://github.com/securityvoid/de-fusion-mcp"
   depends_on :macos
   depends_on formula: "python@3.13"
-  postflight_steps do
-    run "{{HOMEBREW_PREFIX}}/opt/python@3.13/bin/python3.13",
-        args: ["{{staged_path}}/de-fusion-mcp-{{version}}/install.py"],
-        must_succeed: true
-  end
-  uninstall_preflight_steps do
-    run "{{HOMEBREW_PREFIX}}/opt/python@3.13/bin/python3.13",
-        args: ["{{staged_path}}/de-fusion-mcp-{{version}}/install.py", "--uninstall"],
-        must_succeed: false
-  end
+  installer script: {
+    executable: "#{HOMEBREW_PREFIX}/opt/python@3.13/bin/python3.13",
+    args:       ["#{staged_path}/de-fusion-mcp-#{version}/install.py"],
+  }
+  uninstall script: {
+    executable:   "#{HOMEBREW_PREFIX}/opt/python@3.13/bin/python3.13",
+    args:         ["#{staged_path}/de-fusion-mcp-#{version}/install.py", "--uninstall"],
+    must_succeed: false,
+  }
   caveats <<~EOS
     In Fusion, open Utilities > Add-Ins and tick "Run on Startup" for De-Fusion (brew cannot tick it).
     Use the "De-Fusion Setup" button to write MCP client configs.
   EOS
 end
 ```
-Steps DSL (verified in Homebrew 7 `cask/dsl.rb` and `install_steps.rb`): inside a steps block `{{HOMEBREW_PREFIX}}`, `{{staged_path}}` and `{{version}}` are template tokens expanded at run time (in the command path and in `args`). Block-form `#{HOMEBREW_PREFIX}`/`#{staged_path}` are not used.
+Why `installer script:` (Homebrew 7 Cask Cookbook, "Cask artifact trust and sandboxing"): `*_steps` blocks run sandboxed with no real-home access and `postflight` blocks are deprecated, while `installer script:` runs unsandboxed, as `install.py` needs (Fusion's Python and AddIns folder under the real home, `~/.defusion`, pip). `installer` requires an `uninstall` stanza, which the `uninstall script:` provides.
 
 Python decision: Homebrew `python@3.13` (declared dependency) because `/usr/bin/python3` is the Xcode shim with pip below the 22.3 that
 `install.py` needs; `install.py` finds Fusion's Python itself and runs pip from the running Python. Cask tarball top directory is
@@ -85,7 +84,7 @@ if not is_our_link(link):
 ## 6. Tests
 - `test_render_cask.py`: run `scripts/render_cask.py` via `subprocess` with `sys.executable`; assertions per REQ-RELEASE-007 (url line keeps `v#{version}/de-fusion-mcp-#{version}.tar.gz`).
 - `test_release.py`: read text of `release.yml`, template, `LICENSE`, `README.md`; assertions per REQ-RELEASE-008. `release.yml`: no `x-access-token:` or `@github.com/`,
-  secret passed via `token:`, `render_cask.py` precedes `gh release create`, every step running `gh ` sets `GH_TOKEN`, `HOMEBREW_TAP_TOKEN` appears only in the tap checkout step, `GITHUB_ENV` appears, both `git config` lines appear before `git commit`, `git add Casks/de-fusion-mcp.rb` precedes `git commit`. Template: `desc` is the exact REQ-RELEASE-005 string, `postflight_steps do` block has `install.py` and `must_succeed: true`, `uninstall_preflight_steps do` block has `--uninstall` and `must_succeed: false`, neither `postflight do` nor `uninstall_preflight do` appears, `depends_on :macos`. Include `ruby -c` on the rendered
+  secret passed via `token:`, `render_cask.py` precedes `gh release create`, every step running `gh ` sets `GH_TOKEN`, `HOMEBREW_TAP_TOKEN` appears only in the tap checkout step, `GITHUB_ENV` appears, both `git config` lines appear before `git commit`, `git add Casks/de-fusion-mcp.rb` precedes `git commit`. Template: assertions per REQ-RELEASE-005 acceptance; a stanza is the text from its `installer script:` / `uninstall script:` line to the next line starting `  }`. Include `ruby -c` on the rendered
   cask only when `shutil.which("ruby")`.
 - `test_readme.py`: `section("Install")` text (existing helper) contains `brew install --cask securityvoid/tap/de-fusion-mcp` before `python install.py` (`str.index` of the brew line < that of `python install.py`), `brew uninstall --cask de-fusion-mcp` and `Run on Startup` (REQ-RELEASE-009).
 - `test_install.py` additions: stale live link, stale dangling link, real directory (exit 3, untouched), link to `other` (exit 3).
