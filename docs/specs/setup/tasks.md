@@ -70,7 +70,7 @@ set (`docs/specs/core/tasks.md`).
 ## Phase 5 — Claude Code config directories
 - [x] **TASK-SETUP-009** [REQ-SETUP-015]: Detect Claude Code directories
   - `clients.py`: add `claude_dirs` per § 2.7. `setup_ui.py`: append `claude_dirs()` to the detected list.
-  - Tests: the REQ-SETUP-015 acceptance case in `tests/test_clients.py` and `tests/test_setup_ui.py`; README Setup dialog section names the extra `Claude Code (~/<dir>)` entries, checked in `tests/test_readme.py` (the section contains `Claude Code (~/`).
+  - Tests: the REQ-SETUP-015 acceptance case in `tests/test_clients.py` and `tests/test_setup_ui.py`; the dialog test fake rejects any input id outside `[A-Za-z0-9_-]` like Fusion, so a dotted directory name fails; README Setup dialog section names the extra `Claude Code (~/<dir>)` entries, checked in `tests/test_readme.py` (the section contains `Claude Code (~/`).
   - _Output_: `De-Fusion/defusion/clients.py`, `De-Fusion/defusion/setup_ui.py`, `README.md`, `tests/test_clients.py`, `tests/test_setup_ui.py`, `tests/test_readme.py`
   - _Reuse_: the `claude-code` row's `build`, `clients.read`/`plan`/`apply`.
   - _Verify_: `pytest -q`

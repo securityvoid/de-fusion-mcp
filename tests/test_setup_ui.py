@@ -454,6 +454,9 @@ def test_claude_config_dirs_get_checkboxes(env, tmp_path):
     for d in (".claude-akolytos", ".other"):
         (env / d).mkdir()
         (env / d / ".claude.json").write_text("{}")
+    for d in (".a.b", ".a_b"):
+        (env / d).mkdir()
+        (env / d / ".claude.json").write_text("{}")
     (env / "Documents").mkdir()
     (env / "Documents" / ".claude.json").write_text("{}")
     real = tmp_path / "real.json"
@@ -461,9 +464,10 @@ def test_claude_config_dirs_get_checkboxes(env, tmp_path):
     (env / ".x").mkdir()
     (env / ".x" / ".claude.json").symlink_to(real)
     cmd = open_dialog(env)
-    ids = ["client_claude-code.claude-akolytos", "client_claude-code.other", "client_claude-code.x"]
+    ids = ["client_claude-code__claude-akolytos", "client_claude-code__other", "client_claude-code__x"]
     assert all(box(cmd, i) and box(cmd, i).value for i in ids)
-    assert box(cmd, ids[0]).name == "Claude Code (~/.claude-akolytos)" and box(cmd, "client_claude-codeDocuments") is None
+    assert box(cmd, ids[0]).name == "Claude Code (~/.claude-akolytos)" and box(cmd, "client_claude-code__Documents") is None
+    assert box(cmd, "client_claude-code__a_b") and box(cmd, "client_claude-code__a_b_")
     box(cmd, ids[1]).value = False
     cmd.ok()
     mine = env / ".claude-akolytos" / ".claude.json"

@@ -1052,6 +1052,10 @@ class DropDownCommandInput(CommandInput):
 
 class CommandInputs(Collection):
     def _add(self, inp):
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", inp.id):  # real Fusion rejects other characters in an input id
+            raise RuntimeError("3 : invalid argument id")
+        if self.itemById(inp.id):
+            raise RuntimeError("3 : invalid argument id")  # a repeated id is rejected too
         self._items.append(inp)
         return inp
 

@@ -22,7 +22,7 @@ Files touched: `De-Fusion/defusion/clients.py`, `De-Fusion/defusion/setup_ui.py`
 @dataclass(frozen=True)
 class Client:
     id: str            # "claude-code", "codex", "gemini", "cursor", "copilot", "windsurf",
-                       # "zed", "cline", "cline-cli", "claude-desktop"
+                       # "zed", "cline", "cline-cli", "claude-desktop"; `claude_dirs` adds `claude-code_<safe>` (§ 2.7)
     label: str
     key: str           # top-level key: mcpServers | context_servers | mcp_servers (codex, entry name defusion)
     fmt: str           # "json" | "toml"
@@ -121,8 +121,7 @@ the entry manually`).
 (an `OSError` -> no extra clients), sorted by name. An entry is kept when its name starts with `.`, it is a
 directory and not a symlink, and it holds an entry `.claude.json` that exists and is not a directory (a symlink is kept; § 2.4 skips it at plan time); an `OSError` from any of these
 per-entry checks skips that entry and the scan continues. Each kept `<dir>` (e.g. `.claude-akolytos`) returns
-`Client(f"claude-code{<dir>}", f"Claude Code (~/{<dir>})", "mcpServers", "json", path, build)`: the id is unique
-per directory, `build` is the `claude-code` row's and `path` = `home/<dir>/.claude.json`. The dialog calls `claude_dirs()` once in `CommandCreated` and caches the result
+`Client(f"claude-code_{safe}", f"Claude Code (~/{<dir>})", "mcpServers", "json", path, build)`, where `safe` is `<dir>` with every character outside `[A-Za-z0-9_-]` replaced by `_` (Fusion rejects other characters in an input id); when two directories give the same id, each later one gets `_` appended until it is unique (name order); `build` is the `claude-code` row's and `path` = `home/<dir>/.claude.json`. The dialog calls `claude_dirs()` once in `CommandCreated` and caches the result
 with the session's other reads (`InputChanged` never rescans); its detected list is
 `[c for c in CLIENTS if detect(c)] + list(claude_dirs(plat))`; `~/.claude.json` stays the table's `claude-code` row.
 

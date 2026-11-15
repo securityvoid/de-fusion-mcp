@@ -585,7 +585,7 @@ def test_claude_dirs_apply_and_symlink_skip(home, plat, tmp_path):
     real = write(tmp_path / "real.json", "{}")
     (home / ".x").mkdir()
     (home / ".x" / ".claude.json").symlink_to(real)
-    good, linked = [c for c in clients.claude_dirs(plat) if c.id.endswith((".claude-akolytos", ".x"))]
+    good, linked = [c for c in clients.claude_dirs(plat) if c.id.endswith(("__claude-akolytos", "__x"))]
     assert clients.apply(clients.plan(good, URL, TOKEN, clients.read(good, plat))).status == "ok"
     assert json.loads(f.read_text())["mcpServers"]["de-fusion"]["url"] == URL
     res = clients.apply(clients.plan(linked, URL, TOKEN, clients.read(linked, plat)))
@@ -596,3 +596,11 @@ def test_claude_dirs_apply_and_symlink_skip(home, plat, tmp_path):
 
 def test_claude_dirs_unreadable_home(tmp_path):
     assert clients.claude_dirs(clients.platform(env={}, home=tmp_path / "missing")) == ()
+
+
+def test_claude_dirs_duplicate_sanitized_id_made_unique(home, plat):
+    write(home / ".a.b" / ".claude.json", "{}")
+    write(home / ".a_b" / ".claude.json", "{}")
+    found = clients.claude_dirs(plat)
+    assert [c.id for c in found] == ["claude-code__a_b", "claude-code__a_b_"]
+    assert [c.label for c in found] == ["Claude Code (~/.a.b)", "Claude Code (~/.a_b)"]

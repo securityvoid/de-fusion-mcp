@@ -210,8 +210,11 @@ def claude_dirs(plat=None):
         try:
             if d.name.startswith(".") and d.is_dir() and not d.is_symlink():
                 f = d / ".claude.json"
+                cid = "claude-code_" + re.sub(r"[^A-Za-z0-9_-]", "_", d.name)
                 if f.exists() and not f.is_dir():
-                    found.append(Client(f"claude-code{d.name}", f"Claude Code (~/{d.name})", base.key, base.fmt,
+                    while cid in {c.id for c in found}:
+                        cid += "_"
+                    found.append(Client(cid, f"Claude Code (~/{d.name})", base.key, base.fmt,
                                         lambda p, f=f: f, base.build))
         except OSError:
             continue
