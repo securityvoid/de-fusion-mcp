@@ -6,8 +6,7 @@ A "De-Fusion Setup" command in Fusion's add-in toolbar panel opens one dialog th
 `~/.defusion/config.toml` (port, token, folder) and adds or removes the `de-fusion` MCP server entry
 in the config files of MCP clients whose config file exists. Client logic is a pure-Python, table-driven module
 `De-Fusion/defusion/clients.py` (no `adsk` import); the dialog is `De-Fusion/defusion/setup_ui.py`.
-Section references (§) point to `docs/specs/setup/design.md`. A brew cask that installs the files
-and link is a separate spec and out of scope.
+Section references (§) point to `docs/specs/setup/design.md`.
 
 ## Operator ask
 2026-11-12: "an in-Fusion button/dialog to set up the MCP: click a few buttons to install into MCP
@@ -29,7 +28,7 @@ clients; include auth option; automatic as possible"
   optional folder limit (empty = none), an auth dropdown (`Generate token`, `Enter my own`, `None`),
   a masked token field used only for `Enter my own`, one ticked checkbox per detected client (undetected and unsupported clients are not listed; when none is
   detected the dialog shows no client checkboxes and OK is disabled), a mode (Apply default, Remove). The default auth is `Enter my own` prefilled with the existing config.toml token when there
-  is one, else `Generate token`. Port and folder shall be validated with the core rules (port integer
+  is one, else `None`. Port and folder shall be validated with the core rules (port integer
   1024-65535; folder through `guard.norm_folder`), the own token shall match
   `^[A-Za-z0-9\-._~+/]+=*$`, and own token and folder length shall not exceed 256 (token) and 512 (folder) characters; an
   invalid value shall disable OK. In Remove mode config planning and port, folder and token validation are skipped; OK is still disabled with no client detected.
@@ -38,7 +37,7 @@ clients; include auth option; automatic as possible"
     OK; own token `abc-123_`
     enables it; defaults enable it; only detected clients appear, all ticked, and an undetected client has no checkbox; with none detected there are no client checkboxes and OK is disabled; with an
     existing config token the default is `Enter my own` with that token and Apply leaves it unchanged,
-    with none it is `Generate token`; in Remove mode port `abc` keeps OK enabled, but with none detected OK is disabled.
+    with none it is `None`; in Remove mode port `abc` keeps OK enabled, but with none detected OK is disabled.
 - **REQ-SETUP-003**: Apply shall write `~/.defusion/config.toml` (directory from
   `config.CONFIG_DIR`): set `port`, set `folder` or remove it when empty, set `token` or remove it
   for `None`; every other key, table and comment shall be preserved; a missing file shall be created
@@ -52,7 +51,7 @@ clients; include auth option; automatic as possible"
   Code, Codex CLI, Gemini CLI, Cursor, VS Code Copilot, Windsurf/Devin, Zed, Cline (VS Code), Cline
   CLI, Claude Desktop, each with config path per platform (macOS and Windows; `$COPILOT_HOME` and
   `$CLINE_MCP_SETTINGS_PATH` honoured; an empty override is ignored, a non-absolute override or a
-  missing `APPDATA` on Windows makes the client undetected and not listed; the reason is visible only through `clients.plan`), top-level key, entry builder and token mode. Detection shall
+  missing `APPDATA` on Windows makes the client undetected and not listed; the reason is visible only through `clients.plan`), top-level key and entry builder. Detection shall
   be true only when that config file exists.
   - _Acceptance_: With a temp `HOME`, creating `~/.cursor/mcp.json` makes only Cursor detected (an
     empty `~/.cursor/` does not); env
@@ -80,20 +79,18 @@ clients; include auth option; automatic as possible"
     a second merge is `unchanged` with one backup in total; a 0644 file keeps 0644 without a token and
     becomes 0600 with a literal token; new token files are 0600.
 - **REQ-SETUP-006**: The entry shall use url `http://127.0.0.1:<port>/mcp` plus `?folder=<quote(norm_folder, safe="")>`
-  when a folder is set (the `install.py` rule; no profile query) and these shapes. Terminal clients
-  use the env-var reference `DEFUSION_TOKEN`: Claude Code `{"type":"http","url","headers":{"Authorization":"Bearer ${DEFUSION_TOKEN}"}}`;
-  Codex `[mcp_servers.defusion]` with `url` and `bearer_token_env_var = "DEFUSION_TOKEN"`; Gemini CLI
-  `mcpServers.de-fusion` `{"httpUrl","headers":{"Authorization":"Bearer ${DEFUSION_TOKEN}"}}`
-  (subject to REQ-SETUP-011). GUI clients receive the literal token: Cursor `{"url","headers"}`;
+  when a folder is set (the `install.py` rule; no profile query) and these shapes. Every client receives
+  the literal token, never an environment-variable reference, so no shell or environment setup is needed: Claude Code `{"type":"http","url","headers":{"Authorization":"Bearer <token>"}}`;
+  Codex `[mcp_servers.defusion]` with `url` and `http_headers = { Authorization = "Bearer <token>" }`; Gemini CLI
+  `mcpServers.de-fusion` `{"httpUrl","headers"}`; Cursor `{"url","headers"}`;
   VS Code Copilot `{"type":"http","url","headers","tools":["*"]}`; Windsurf/Devin `{"serverUrl","headers"}`;
   Zed under `context_servers` `{"url","headers"}`; Cline (both) `{"type":"streamableHttp","url","headers","disabled":false}`;
   Claude Desktop (exact pinned `mcp-remote@0.16.6`, a constant in `clients.py`) `{"command":"npx","args":["-y","mcp-remote@0.16.6","<url>","--allow-http","--transport","http-only","--header","Authorization:${AUTH_HEADER}"],"env":{"AUTH_HEADER":"Bearer <token>"}}`.
   With auth `None` no `headers`, `Authorization`, `--header`/`env` or token is written for any client.
-  - _Acceptance_: Per-client golden entries for token and no-token cases; Codex TOML contains
-    `bearer_token_env_var` and no token text; Cursor/Copilot/Windsurf/Zed/Cline entries contain
+  - _Acceptance_: Per-client golden entries for token and no-token cases; the Claude Code, Codex, Gemini, Cursor/Copilot/Windsurf/Zed/Cline entries contain
     the literal token and no `${`; the Desktop entry contains the literal token in `env.AUTH_HEADER`,
-    `${AUTH_HEADER}` only in its args, no `${DEFUSION_TOKEN}`, and `args[1]` matches
-    `mcp-remote@\d+\.\d+\.\d+`; no literal-mode entry contains `${DEFUSION_TOKEN}`; a folder of `My Project/Parts` yields `?folder=My%20Project%2FParts`;
+    `${AUTH_HEADER}` only in its args, and `args[1]` matches
+    `mcp-remote@\d+\.\d+\.\d+`; no entry contains `DEFUSION_TOKEN` or `bearer_token_env_var`; a folder of `My Project/Parts` yields `?folder=My%20Project%2FParts`;
     no-auth entries contain no `Authorization`.
 - **REQ-SETUP-007**: For Codex, merge and remove shall edit the TOML text, replacing or inserting
   only the `[mcp_servers.defusion]` table and its sub-tables, and shall verify the new text parses
@@ -112,33 +109,25 @@ clients; include auth option; automatic as possible"
   first; in Apply mode a skipped or failed config.toml plan, whatever the auth choice, writes no client and reports each
   ticked client `skipped: config.toml not updated; fix config.toml and Apply again`. After the action a result screen, a second
   command dialog with read-only text boxes (not a `messageBox`), shall list one `<label>: <status word>` line per client (`ok` /
-  `skipped: <reason>` / `not-present` / `unchanged`), the backup path, the export line, the token and
+  `skipped: <reason>` / `not-present` / `unchanged`), the backup path, the token and
   the warnings, and the note that port and token changes apply after Utilities > Add-Ins >
   De-Fusion > Stop then Run, or a Fusion restart. Every skip message shall name the
   item and the action to take.
   - _Acceptance_: With the fake dialog, the result dialog's read-only inputs hold one line per ticked client (`config.toml` line first) with the exact wording
-    `ok` / `skipped: <reason>` / `not-present` / `unchanged`, the backup path, the export line and the
+    `ok` / `skipped: <reason>` / `not-present` / `unchanged`, the backup path and the
     restart note (contains `Add-Ins`, not `restart_addin`); a file mutated after the dialog opened is `skipped:
     changed since the dialog opened; reopen the dialog`, keeps the mutated bytes and has no backup; with an invalid existing
     config.toml and any auth choice (including `None`) every ticked client file is byte-identical, has no backup and is
     reported skipped; a raising client does not stop the next client or the result dialog; 20 input
     changes cause one read of config.toml and one per client.
 - **REQ-SETUP-010**: Generated tokens shall be `secrets.token_urlsafe(32)`, generated once per dialog
-  session and shown unmasked in a read-only box. In Apply mode, when a terminal client (Claude Code, Codex CLI,
-  Gemini CLI) is ticked and auth is not `None`, the `export` and `token` boxes of the dialog and result screens shall show the line
-  `export DEFUSION_TOKEN=<token>` in a copyable read-only box and shall warn that Codex ignores the
-  server until the variable is set. De-Fusion shall never edit a shell profile. In Apply mode, when Claude Desktop
+  session and shown unmasked in a read-only box. In Apply mode with auth not `None`, the `token` box of the result screen shall show the token
+  in a copyable read-only box. De-Fusion shall never edit a shell profile. In Apply mode, when Claude Desktop
   is ticked and `npx` is not on `PATH` (`shutil.which`), the dialog shall warn that it needs Node.js.
   - _Acceptance_: Two dialog sessions produce different 43-character tokens, the same token across
-    refreshes of one session; the export line appears only in Apply mode with a ticked terminal client and auth
-    other than `None` (Remove mode shows no export line, token or Codex warning); the npx warning appears only in Apply mode with Claude Desktop ticked and `which` returning
+    refreshes of one session; the token box appears only in Apply mode with auth
+    other than `None` (Remove mode shows no token); no result screen shows an `export` line or Codex warning; the npx warning appears only in Apply mode with Claude Desktop ticked and `which` returning
     `None`; no code path writes `.zshrc`, `.bashrc`, `.profile` or the registry.
-- **REQ-SETUP-011**: The Gemini CLI header env expansion (`${DEFUSION_TOKEN}` in `headers`) shall be
-  tested against a stub MCP server with the real Gemini CLI. If it expands, the env-var form stays;
-  if not, Gemini shall switch to a literal token in the file (GUI-mode shape) and design § 3.3 shall
-  record the result.
-  - _Acceptance_: design § 3.3 records `expands` or `literal fallback` with the Gemini CLI version
-    and the stub's observed Authorization header; the Gemini row and golden tests match the record.
 - **REQ-SETUP-012**: All dialog and command handlers shall run on the Fusion main thread; the server
   thread shall never call UI APIs. `setup_ui.py` shall be imported lazily from `run()` so a UI
   failure cannot block the server, and `clients.py` shall import nothing from `adsk`.
@@ -150,8 +139,8 @@ clients; include auth option; automatic as possible"
   - _Acceptance_: design § 3.2 has a status for each inferred path; none says "unverified" without
     "not testable here".
 - **REQ-SETUP-014**: README.md shall have a "Setup dialog" section (button location, what Apply
-  writes, token placement per client type, Remove, restart note, the `export DEFUSION_TOKEN` step and
-  the Codex warning, unsupported clients (README only; not shown in the dialog), Claude Desktop needing Node.js), and design § 6 shall give
+  writes, token placement (literal in each client file, no environment variable or shell setup), Remove, restart note,
+  unsupported clients (README only; not shown in the dialog), Claude Desktop needing Node.js), and design § 6 shall give
   an install-time smoke note.
-  - _Acceptance_: `tests/test_readme.py` finds the section containing `DEFUSION_TOKEN`, `Remove`
-    and `restart`; design § 6 lists the smoke steps.
+  - _Acceptance_: `tests/test_readme.py` finds the section containing `Remove`
+    and `restart` and no `export DEFUSION_TOKEN`; design § 6 lists the smoke steps.

@@ -46,11 +46,9 @@ set (`docs/specs/core/tasks.md`).
   - _Verify_: `pytest -q tests/test_setup_ui.py tests/test_entry.py && grep -n "SolidScriptsAddinsPanel\|PANEL_ID" De-Fusion/defusion/setup_ui.py`
 
 ## Phase 3 — Confirmations and docs
-- [x] **TASK-SETUP-006** [REQ-SETUP-011, REQ-SETUP-013]: Gemini expansion and inferred paths
-  - Run the § 3.3 stub test with the installed Gemini CLI; if it does not expand, switch the Gemini
-    row to literal mode and update tests. Test the other § 3.2 paths as far as the machine allows.
-    Fill § 3.2 and § 3.3 values; no "filled by" text remains.
-  - _Output_: `docs/specs/setup/design.md` (§ 3.2, § 3.3 values), `De-Fusion/defusion/clients.py` and `tests/test_clients.py` only if the fallback applies
+- [x] **TASK-SETUP-006** [REQ-SETUP-013]: Inferred paths
+  - Test the § 3.2 paths as far as the machine allows. Fill § 3.2 values; no "filled by" text remains.
+  - _Output_: `docs/specs/setup/design.md` (§ 3.2 values)
   - _Reuse_: `clients.plan`/`apply` against a temp `HOME`.
   - _Verify_: `! grep -qE "filled by" docs/specs/setup/design.md && pytest -q tests/test_clients.py`
 - [x] **TASK-SETUP-007** [REQ-SETUP-014]: README
@@ -59,6 +57,15 @@ set (`docs/specs/core/tasks.md`).
   - _Output_: `README.md`, `tests/test_readme.py`
   - _Reuse_: `tests/test_readme.py` section helper.
   - _Verify_: `pytest -q tests/test_readme.py && pytest -q`
+
+## Phase 4 — Literal tokens, auth off by default
+- [x] **TASK-SETUP-008** [REQ-SETUP-002, REQ-SETUP-004, REQ-SETUP-005, REQ-SETUP-006, REQ-SETUP-009, REQ-SETUP-010, REQ-SETUP-014]: Literal token for every client
+  - `clients.py`: drop `Client.terminal`, `ENV_VAR`, the env-var header builder and the `bearer_token_env_var` entry; Claude Code and Gemini build `headers.Authorization = "Bearer <token>"`, Codex builds `http_headers` (§ 2.3); the literal-token mode (0600) applies to every client; `tests/test_clients.py` runs all ten client ids: an existing 0644 file becomes 0600 after applying a token plan and stays 0644 for an auth-`None` plan.
+  - `setup_ui.py`: default auth `None` when `config.toml` has no token; remove the `export` box, `CODEX_WARN` and the `terminal` logic; the `token` box shows in Apply mode with auth not `None`.
+  - `README.md`: Setup dialog section describes literal tokens, no `export DEFUSION_TOKEN`; update `tests/test_clients.py`, `tests/test_setup_ui.py`, `tests/test_readme.py` to REQ-SETUP-002, -006, -010, -014 acceptance.
+  - _Output_: `De-Fusion/defusion/clients.py`, `De-Fusion/defusion/setup_ui.py`, `README.md`, `tests/test_clients.py`, `tests/test_setup_ui.py`, `tests/test_readme.py`
+  - _Reuse_: `clients._mode` (0600 for token writes), `tests/test_clients.py` and `tests/test_setup_ui.py` fixtures.
+  - _Verify_: `pytest -q && ! grep -rnE "bearer_token_env_var|\.terminal|CODEX_WARN|export DEFUSION_TOKEN" De-Fusion README.md`
 
 ## Operator verification (not tasks)
 Click-through in Fusion per design § 6 install-time smoke: button appears in Add-Ins panel, dialog

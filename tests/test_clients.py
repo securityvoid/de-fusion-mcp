@@ -54,7 +54,6 @@ def fixture_text(c):
 # --- table, detection, paths (REQ-SETUP-004) ---
 def test_table_shape():
     assert len(clients.CLIENTS) == 10
-    assert {c.id for c in clients.CLIENTS if c.terminal} == {"claude-code", "codex", "gemini"}
 
 
 def test_detection_only_cursor(home, plat):
@@ -113,11 +112,10 @@ def test_build_url():
     assert clients.build_url(8642, "/A/B/").endswith("?folder=A%2FB")
 
 
-BEARER_ENV = {"Authorization": "Bearer ${DEFUSION_TOKEN}"}
 BEARER = {"Authorization": "Bearer " + TOKEN}
 GOLDEN = {
-    "claude-code": {"type": "http", "url": URL, "headers": BEARER_ENV},
-    "gemini": {"httpUrl": URL, "headers": BEARER_ENV},
+    "claude-code": {"type": "http", "url": URL, "headers": BEARER},
+    "gemini": {"httpUrl": URL, "headers": BEARER},
     "cursor": {"url": URL, "headers": BEARER},
     "copilot": {"type": "http", "url": URL, "headers": BEARER, "tools": ["*"]},
     "windsurf": {"serverUrl": URL, "headers": BEARER},
@@ -143,7 +141,7 @@ def test_golden_entry_with_token(cid, plat):
 @pytest.mark.parametrize("cid", list(BY_ID))
 def test_no_auth_entries_have_no_token_parts(cid):
     text = json.dumps(BY_ID[cid].build(URL, None))
-    assert not re.search(r"Authorization|--header|AUTH_HEADER|DEFUSION_TOKEN|env", text)
+    assert not re.search(r"Authorization|--header|AUTH_HEADER|DEFUSION_TOKEN|http_headers|env", text)
 
 
 def test_desktop_pin():
@@ -203,12 +201,13 @@ def test_new_file_created_0600_with_token_and_parents(plat):
     assert path.read_text().endswith("}\n") and not baks(path)
 
 
-def test_modes(plat):
-    path = write(path_of("cursor", plat), "{}")
+@pytest.mark.parametrize("cid", list(BY_ID))
+def test_modes(cid, plat):
+    path = write(path_of(cid, plat), "" if cid == "codex" else "{}")
     path.chmod(0o644)
-    clients.apply(run_plan("cursor", plat, token=None))
+    clients.apply(run_plan(cid, plat, token=None))
     assert path.stat().st_mode & 0o777 == 0o644
-    clients.apply(run_plan("cursor", plat))
+    clients.apply(run_plan(cid, plat))
     assert path.stat().st_mode & 0o777 == 0o600
 
 
@@ -373,7 +372,7 @@ def codex_plan(plat, text=None, token=TOKEN, url=URL):
 
 def test_codex_block_in_middle_exact_bytes(plat):
     pl = codex_plan(plat, CODEX)
-    block = '[mcp_servers.defusion]\nurl = "%s"\nbearer_token_env_var = "DEFUSION_TOKEN"\n' % URL
+    block = '[mcp_servers.defusion]\nurl = "%s"\nhttp_headers = { Authorization = "Bearer %s" }\n' % (URL, TOKEN)
     expect = CODEX.replace('[mcp_servers.defusion]\nurl = "http://old"\n\n[mcp_servers.defusion.env]\nA = "b"\n\n', "") + "\n" + block
     assert pl.action == "update" and pl.new.decode() == expect
     r = clients.apply(pl)

@@ -76,12 +76,9 @@ the port, an optional folder limit and the auth, then adds De-Fusion to the MCP 
   stays) and adds or replaces only the `de-fusion` entry (Codex: `defusion`) in each ticked client's
   config. Existing files get a `.defusion-bak-<UTC timestamp>` backup first, writes are atomic, and a
   file that is invalid, a symlink or over 10 MB is skipped with the reason instead of being touched.
-- **Auth**: `Generate token`, `Enter my own` (prefilled from `config.toml`) or `None`.
-- **Token placement**: terminal clients (Claude Code, Codex CLI, Gemini CLI) get a `${DEFUSION_TOKEN}`
-  reference, so the token is not in their files; run the `export DEFUSION_TOKEN=<token>` line the
-  dialog shows in your shell profile yourself (we never edit it). Codex silently ignores the server
-  until that variable is set. GUI clients (Cursor, VS Code Copilot, Windsurf/Devin, Zed, Cline,
-  Claude Desktop) get the literal token in their file, which is then readable only by you.
+- **Auth**: `None` (the default), `Generate token` or `Enter my own` (prefilled from `config.toml`).
+- **Token placement**: with auth on, every client gets the literal token in its own config file
+  (readable only by you), so there is no environment variable or shell setup.
 - **Remove** mode deletes only the De-Fusion entry from the ticked clients (after a backup) and
   leaves `config.toml` alone.
 - **Restart**: port and token changes apply after De-Fusion restarts: Utilities > Add-Ins >

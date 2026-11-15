@@ -141,10 +141,10 @@ def test_stop_removes_even_if_server_stop_raises(entry, monkeypatch, fake_app, t
 def test_defaults(env):
     cmd = open_dialog(env, "cursor")
     assert box(cmd, "port").value == "8642" and box(cmd, "folder").value == ""
-    assert box(cmd, "auth").selectedItem.name == GEN and box(cmd, "mode").selectedItem.name == "Apply"
+    assert box(cmd, "auth").selectedItem.name == NONE and box(cmd, "mode").selectedItem.name == "Apply"
     assert box(cmd, "own_token").isPassword
     assert cmd.isOKButtonEnabled and cmd.okButtonText == "Apply"
-    assert box(cmd, "own_token").isVisible is False and box(cmd, "gen_token").isVisible
+    assert box(cmd, "own_token").isVisible is False and box(cmd, "gen_token").isVisible is False
     present = {c.id: box(cmd, "client_" + c.id) for c in clients.CLIENTS if box(cmd, "client_" + c.id)}
     assert list(present) == ["cursor"] and present["cursor"].value is True and present["cursor"].name == "Cursor"
 
@@ -258,23 +258,6 @@ def test_generated_token_per_session(env):
     assert box(open_dialog(), "gen_token").text != token
 
 
-def test_export_line_and_warnings(env):
-    cmd = open_dialog(env, "cursor", "codex")
-    untick_all_but(cmd, "cursor")
-    cmd.change(box(cmd, "client_cursor"))
-    assert box(cmd, "export").text == ""
-    box(cmd, "client_codex").value = True
-    cmd.change(box(cmd, "client_codex"))
-    token = box(cmd, "gen_token").text
-    assert box(cmd, "export").text == "export DEFUSION_TOKEN=" + token
-    assert "Codex ignores" in box(cmd, "warnings").text
-    edit(cmd, "auth", NONE)
-    assert box(cmd, "export").text == "" and box(cmd, "warnings").text == ""
-    edit(cmd, "auth", GEN)
-    edit(cmd, "mode", "Remove")
-    assert box(cmd, "export").text == "" and box(cmd, "warnings").text == ""
-
-
 def test_npx_warning(env, monkeypatch):
     monkeypatch.setattr(setup_ui.shutil, "which", lambda name: None)
     cmd = open_dialog(env, "cursor", "claude-desktop")
@@ -312,8 +295,7 @@ def test_execute_applies_and_shows_result(env):
     assert lines[:3] == ["config.toml: ok", "Codex CLI: ok", "Cursor: ok"]
     assert (env / ".config" / "zed" / "settings.json").read_text() == "{}" and "Zed" not in result_box("results").text
     assert setup_ui.RESTART in lines and "Add-Ins" in setup_ui.RESTART and "restart_addin" not in setup_ui.RESTART
-    assert result_box("export").text == "export DEFUSION_TOKEN=tok-1" and result_box("token").text == "tok-1"
-    assert "Codex ignores" in result_box("warnings").text
+    assert result_box("token").text == "tok-1" and result_box("warnings") is None
     assert ui().message_boxes == []
     assert ui().commandDefinitions.itemById(setup_ui.RESULT_ID).last_command.isCancelButtonVisible is False
 
@@ -323,7 +305,7 @@ def test_result_second_run_changed_port_lists_backup(env):
     untick_all_but(cmd, "cursor")
     edit(cmd, "auth", NONE)
     cmd.ok()
-    assert result_box("export") is None and result_box("token") is None
+    assert result_box("token") is None
     cmd = open_dialog(env, "cursor")
     untick_all_but(cmd, "cursor")
     edit(cmd, "auth", NONE)
@@ -342,12 +324,13 @@ def test_remove_mode_execute(env):
     cfg_before = config.CONFIG_PATH.read_bytes()
     cmd = open_dialog(env, "cursor", "windsurf")
     untick_all_but(cmd, "cursor", "windsurf")
+    edit(cmd, "auth", GEN)
     edit(cmd, "mode", "Remove")
     cmd.ok()
     lines = result_box("results").text.splitlines()
     assert lines[:2] == ["Cursor: ok", "Windsurf/Devin: not-present"]
     assert json.loads(cursor_path(env).read_text())["mcpServers"] == {}
-    assert config.CONFIG_PATH.read_bytes() == cfg_before and result_box("export") is None and result_box("token") is None
+    assert config.CONFIG_PATH.read_bytes() == cfg_before and result_box("token") is None and result_box("warnings") is None
 
 
 def test_remove_ignores_invalid_config(env):
@@ -446,6 +429,7 @@ def test_config_changed_since_dialog_opened_blocks_clients(env):
     config.CONFIG_PATH.write_text("port = 8000\n")
     cmd = open_dialog(env, "cursor")
     untick_all_but(cmd, "cursor")
+    edit(cmd, "auth", GEN)
     config.CONFIG_PATH.write_text("port = 8001\n")
     cmd.ok()
     lines = result_box("results").text.splitlines()

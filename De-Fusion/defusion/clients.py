@@ -24,7 +24,6 @@ MAX_BYTES = 10 * 1024 * 1024
 MCP_REMOTE = "mcp-remote@0.16.6"  # exact pinned version; the maintainer bumps it by editing this constant
 MAX_TOKEN = 256
 MAX_FOLDER = 512
-ENV_VAR = "DEFUSION_TOKEN"
 _WRITES = ("add", "update", "remove")
 
 
@@ -49,7 +48,6 @@ def platform(env=None, home=None):
 class Client:
     id: str
     label: str
-    terminal: bool  # True -> env-var mode (DEFUSION_TOKEN), False -> literal token
     key: str  # top-level key holding the servers
     fmt: str  # "json" | "toml"
     path: Callable  # (Platform) -> Path, or a skip reason string
@@ -111,16 +109,8 @@ def _override(var, default, name=None):
     return path
 
 
-def _hdr(auth):
-    return {"headers": {"Authorization": auth}} if auth else {}
-
-
-def _env_hdr(token):
-    return _hdr(token and "Bearer ${%s}" % ENV_VAR)
-
-
 def _lit_hdr(token):
-    return _hdr(token and "Bearer " + token)
+    return {"headers": {"Authorization": "Bearer " + token}} if token else {}
 
 
 def _desktop(url, token):
@@ -136,30 +126,30 @@ def _desktop(url, token):
 _CLINE = ("Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json")
 
 CLIENTS = (
-    Client("claude-code", "Claude Code", True, "mcpServers", "json", _home(".claude.json"),
-           lambda u, t: {"type": "http", "url": u, **_env_hdr(t)}),
-    Client("codex", "Codex CLI", True, "mcp_servers", "toml", _home(".codex", "config.toml"),
-           lambda u, t: {"url": u, **({"bearer_token_env_var": ENV_VAR} if t else {})}),
-    Client("gemini", "Gemini CLI", True, "mcpServers", "json", _home(".gemini", "settings.json"),
-           lambda u, t: {"httpUrl": u, **_env_hdr(t)}),
-    Client("cursor", "Cursor", False, "mcpServers", "json", _home(".cursor", "mcp.json"),
+    Client("claude-code", "Claude Code", "mcpServers", "json", _home(".claude.json"),
+           lambda u, t: {"type": "http", "url": u, **_lit_hdr(t)}),
+    Client("codex", "Codex CLI", "mcp_servers", "toml", _home(".codex", "config.toml"),
+           lambda u, t: {"url": u, **({"http_headers": {"Authorization": "Bearer " + t}} if t else {})}),
+    Client("gemini", "Gemini CLI", "mcpServers", "json", _home(".gemini", "settings.json"),
+           lambda u, t: {"httpUrl": u, **_lit_hdr(t)}),
+    Client("cursor", "Cursor", "mcpServers", "json", _home(".cursor", "mcp.json"),
            lambda u, t: {"url": u, **_lit_hdr(t)}),
-    Client("copilot", "VS Code Copilot", False, "mcpServers", "json",
+    Client("copilot", "VS Code Copilot", "mcpServers", "json",
            _override("COPILOT_HOME", _home(".copilot", "mcp-config.json"), "mcp-config.json"),
            lambda u, t: {"type": "http", "url": u, **_lit_hdr(t), "tools": ["*"]}),
-    Client("windsurf", "Windsurf/Devin", False, "mcpServers", "json",
+    Client("windsurf", "Windsurf/Devin", "mcpServers", "json",
            _roaming(("devin", "mcp_config.json"), (".config", "devin", "mcp_config.json")),
            lambda u, t: {"serverUrl": u, **_lit_hdr(t)}),
-    Client("zed", "Zed", False, "context_servers", "json",
+    Client("zed", "Zed", "context_servers", "json",
            _roaming(("Zed", "settings.json"), (".config", "zed", "settings.json")),
            lambda u, t: {"url": u, **_lit_hdr(t)}),
-    Client("cline", "Cline (VS Code)", False, "mcpServers", "json",
+    Client("cline", "Cline (VS Code)", "mcpServers", "json",
            _roaming(_CLINE, ("Library", "Application Support") + _CLINE),
            lambda u, t: {"type": "streamableHttp", "url": u, **_lit_hdr(t), "disabled": False}),
-    Client("cline-cli", "Cline CLI", False, "mcpServers", "json",
+    Client("cline-cli", "Cline CLI", "mcpServers", "json",
            _override("CLINE_MCP_SETTINGS_PATH", _home(".cline", "data", "settings", "cline_mcp_settings.json")),
            lambda u, t: {"type": "streamableHttp", "url": u, **_lit_hdr(t), "disabled": False}),
-    Client("claude-desktop", "Claude Desktop", False, "mcpServers", "json",
+    Client("claude-desktop", "Claude Desktop", "mcpServers", "json",
            _roaming(("Claude", "claude_desktop_config.json"),
                     ("Library", "Application Support", "Claude", "claude_desktop_config.json")),
            _desktop),
@@ -277,7 +267,12 @@ _OURS = re.compile(r"^\[\s*mcp_servers\.%s(\.[^\]]+)?\s*\]" % TOML_NAME)
 
 
 def _toml_block(entry):
-    return "[mcp_servers.%s]\n%s\n" % (TOML_NAME, "\n".join("%s = %s" % (k, json.dumps(v)) for k, v in entry.items()))
+    def val(v):
+        if isinstance(v, dict):  # inline table; keys and values are basic strings
+            return "{ %s }" % ", ".join("%s = %s" % (k, json.dumps(x)) for k, x in v.items())
+        return json.dumps(v)
+
+    return "[mcp_servers.%s]\n%s\n" % (TOML_NAME, "\n".join("%s = %s" % (k, val(v)) for k, v in entry.items()))
 
 
 def _toml_strip(text):
@@ -344,7 +339,7 @@ def _plan(c, url, token, src, remove):
         new, existed = _toml_edit(entry, src, remove) if c.fmt == "toml" else _json_edit(c, entry, src, remove)
     except _Skip as exc:
         return _skip(src, str(exc))
-    mode = _mode(src.path, bool(token) and not c.terminal)
+    mode = _mode(src.path, bool(token))
     if new is None:
         action = "not-present"
     elif new == src.data:

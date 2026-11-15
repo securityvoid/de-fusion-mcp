@@ -22,7 +22,6 @@ MODES = ("Apply", "Remove")
 TOKEN_RE = r"[A-Za-z0-9\-._~+/]+=*"
 RESTART = ("Port and token changes apply after De-Fusion restarts: "
            "Utilities > Add-Ins > De-Fusion > Stop, then Run, or restart Fusion")
-CODEX_WARN = "Codex ignores the De-Fusion server until DEFUSION_TOKEN is set in its environment."
 NPX_WARN = "Claude Desktop needs Node.js (npx) and it was not found on PATH; install Node.js."
 
 _handlers = []  # every created handler, so Fusion's weak references stay alive
@@ -42,7 +41,6 @@ class Session:
 class Results:
     lines: list
     backups: list
-    export: str
     token: str
     warnings: str
 
@@ -122,12 +120,11 @@ def _created(args):
     inputs.addStringValueInput("folder", "Folder limit (empty = none)", folder)
     auth = inputs.addDropDownCommandInput("auth", "Auth", adsk.core.DropDownStyles.TextListDropDownStyle)
     for name in AUTH:
-        auth.listItems.add(name, name == (AUTH[1] if own else AUTH[0]))
+        auth.listItems.add(name, name == (AUTH[1] if own else AUTH[2]))
     inputs.addStringValueInput("own_token", "Token", own).isPassword = True
     inputs.addTextBoxCommandInput("gen_token", "Generated token", _session.token, 1, True)
     for c in found:
         inputs.addBoolValueInput("client_" + c.id, c.label, True, "", True)
-    inputs.addTextBoxCommandInput("export", "Export", "", 2, True)
     inputs.addTextBoxCommandInput("warnings", "Warnings", "", 3, True)
     mode = inputs.addDropDownCommandInput("mode", "Mode", adsk.core.DropDownStyles.TextListDropDownStyle)
     for name in MODES:
@@ -179,16 +176,11 @@ def _plans(inputs):
     return True, cfg_plan, [(c, clients.plan(c, url, token, _session.sources[c.id])) for c in _ticked(inputs)], token
 
 
-def _extras(ticked, token):
-    """(export line, warnings) shown in Apply mode only."""
-    terminal = any(c.terminal for c in ticked)
-    export = "export DEFUSION_TOKEN=%s" % token if terminal and token else ""
-    warnings = []
-    if export and any(c.id == "codex" for c in ticked):
-        warnings.append(CODEX_WARN)
+def _warnings(ticked):
+    """npx warning shown in Apply mode only."""
     if any(c.id == "claude-desktop" for c in ticked) and shutil.which("npx") is None:
-        warnings.append(NPX_WARN)
-    return export, "\n".join(warnings)
+        return NPX_WARN
+    return ""
 
 
 def _refresh(inputs, cmd):
@@ -197,12 +189,9 @@ def _refresh(inputs, cmd):
     inputs.itemById("own_token").isVisible = not remove and auth == AUTH[1]
     inputs.itemById("gen_token").isVisible = not remove and auth == AUTH[0]
     cmd.okButtonText = "Remove" if remove else "Apply"
-    valid, token = True, None
-    if not remove:
-        valid, _, _, token = _validate(inputs)
-    export, warnings = ("", "") if remove or not valid else _extras(_ticked(inputs), token)
+    valid = remove or _validate(inputs)[0]
+    warnings = "" if remove or not valid else _warnings(_ticked(inputs))
     cmd.isOKButtonEnabled = valid and bool(_session.found)
-    inputs.itemById("export").text = export
     inputs.itemById("warnings").text = warnings
 
 
@@ -236,8 +225,7 @@ def _execute(inputs):
             lines.append("%s: skipped: config.toml not updated; fix config.toml and Apply again" % c.label)
         else:
             record(c.label, _safe_apply(p))
-    export, warnings = ("", "") if remove else _extras(_ticked(inputs), token)
-    _result = Results(lines, backups, export, token or "", warnings)
+    _result = Results(lines, backups, token or "", "" if remove else _warnings(_ticked(inputs)))
     _ui().commandDefinitions.itemById(RESULT_ID).execute()
 
 
@@ -249,6 +237,6 @@ def _result_created(args):
     inputs = cmd.commandInputs
     r = _result
     inputs.addTextBoxCommandInput("results", "Result", "\n".join(r.lines + r.backups + ["", RESTART]), 8, True)
-    for input_id, name, text in (("export", "Export", r.export), ("token", "Token", r.token), ("warnings", "Warnings", r.warnings)):
+    for input_id, name, text in (("token", "Token", r.token), ("warnings", "Warnings", r.warnings)):
         if text:
             inputs.addTextBoxCommandInput(input_id, name, text, 2, True)

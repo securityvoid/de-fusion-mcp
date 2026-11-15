@@ -24,7 +24,6 @@ class Client:
     id: str            # "claude-code", "codex", "gemini", "cursor", "copilot", "windsurf",
                        # "zed", "cline", "cline-cli", "claude-desktop"
     label: str
-    terminal: bool     # True -> env-var mode (DEFUSION_TOKEN), False -> literal token
     key: str           # top-level key: mcpServers | context_servers | mcp_servers (codex, entry name defusion)
     fmt: str           # "json" | "toml"
     path: Callable[[Platform], Path | str]    # Path, or a skip reason (§ 2.6)
@@ -74,14 +73,13 @@ the new block at the end of the text, preceded by one blank line unless the text
 ```
 [mcp_servers.defusion]
 url = "http://127.0.0.1:8642/mcp"
-bearer_token_env_var = "DEFUSION_TOKEN"
+http_headers = { Authorization = "Bearer <token>" }
 ```
-(no `bearer_token_env_var` for auth None). Validation: `tomllib.loads(new)` succeeds, `old_data`
+(no `http_headers` for auth None; the token is written with `json.dumps`, a valid TOML basic string for the token charset). Validation: `tomllib.loads(new)` succeeds, `old_data`
 with the `mcp_servers.defusion` key removed equals `new_data` likewise, and the new
 `mcp_servers.defusion.url` equals the url. Else skip `<path>: not valid TOML (<error>); fix the file or add the entry manually` (or, for a failed
-verification, `<path>: edit would change other tables; add the entry manually`). Live-tested facts: plain http
-loopback works; if `DEFUSION_TOKEN` is unset Codex silently skips the server (hence the warning,
-REQ-SETUP-010).
+verification, `<path>: edit would change other tables; add the entry manually`). Live-tested fact: plain http
+loopback works.
 
 ### 2.4 Backup, atomic write, permissions
 - Symlink: if the file or any directory component between the base (`Path.home()`, `APPDATA` or the
@@ -119,18 +117,18 @@ the entry manually`).
 
 ## 3. Client table
 ### 3.1 Entries and paths
-| id | label | mode | file (macOS / Windows) | key |
-|---|---|---|---|---|
-| claude-code | Claude Code | env | `~/.claude.json` | `mcpServers` |
-| codex | Codex CLI | env | `~/.codex/config.toml` | `mcp_servers` (name `defusion`) |
-| gemini | Gemini CLI | env (§ 3.3) | `~/.gemini/settings.json` | `mcpServers` |
-| cursor | Cursor | literal | `~/.cursor/mcp.json` | `mcpServers` |
-| copilot | VS Code Copilot | literal | `$COPILOT_HOME/mcp-config.json`, else `~/.copilot/mcp-config.json` | `mcpServers` |
-| windsurf | Windsurf/Devin | literal | `~/.config/devin/mcp_config.json` / `%AppData%\devin\mcp_config.json` | `mcpServers` |
-| zed | Zed | literal | `~/.config/zed/settings.json` / `%APPDATA%\Zed\settings.json` | `context_servers` |
-| cline | Cline (VS Code) | literal | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` / `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json` | `mcpServers` |
-| cline-cli | Cline CLI | literal | `$CLINE_MCP_SETTINGS_PATH`, else `~/.cline/data/settings/cline_mcp_settings.json` | `mcpServers` |
-| claude-desktop | Claude Desktop | literal (env block) | `~/Library/Application Support/Claude/claude_desktop_config.json` / `%APPDATA%\Claude\claude_desktop_config.json` | `mcpServers` |
+| id | label | file (macOS / Windows) | key |
+|---|---|---|---|
+| claude-code | Claude Code | `~/.claude.json` | `mcpServers` |
+| codex | Codex CLI | `~/.codex/config.toml` | `mcp_servers` (name `defusion`) |
+| gemini | Gemini CLI | `~/.gemini/settings.json` | `mcpServers` |
+| cursor | Cursor | `~/.cursor/mcp.json` | `mcpServers` |
+| copilot | VS Code Copilot | `$COPILOT_HOME/mcp-config.json`, else `~/.copilot/mcp-config.json` | `mcpServers` |
+| windsurf | Windsurf/Devin | `~/.config/devin/mcp_config.json` / `%AppData%\devin\mcp_config.json` | `mcpServers` |
+| zed | Zed | `~/.config/zed/settings.json` / `%APPDATA%\Zed\settings.json` | `context_servers` |
+| cline | Cline (VS Code) | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` / `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json` | `mcpServers` |
+| cline-cli | Cline CLI | `$CLINE_MCP_SETTINGS_PATH`, else `~/.cline/data/settings/cline_mcp_settings.json` | `mcpServers` |
+| claude-desktop | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` / `%APPDATA%\Claude\claude_desktop_config.json` | `mcpServers` |
 
 `~` paths not listed per platform use `Path.home()` on both. Entry shapes: REQ-SETUP-006.
 
@@ -143,13 +141,6 @@ Windsurf/Devin Windows, inferred from product docs. TASK-SETUP-006 tests what th
 - Cline CLI `~/.cline/data/settings/cline_mcp_settings.json`: confirmed (docs.cline.bot CLI configuration); `CLINE_MCP_SETTINGS_PATH` not in official docs, third-party guides only.
 - Zed `%APPDATA%\Zed\settings.json`: confirmed (Zed docs and guides; `url` + `headers` entries are remote servers over Streamable HTTP or SSE; no `source` key needed in examples).
 - Windsurf/Devin Windows `%APPDATA%\devin\mcp_config.json`: not testable here (third-party guides only; official Windsurf/Devin CLI docs name `~/.codeium/windsurf/mcp_config.json`).
-
-### 3.3 Gemini header expansion (REQ-SETUP-011)
-Result: `expands`. Gemini CLI 0.68.0 (`npx -y @google/gemini-cli`, temp `HOME`, folder trusted via
-`trustedFolders.json`). Method: a stdlib `http.server` stub that logs request headers and answers MCP
-`initialize`; `~/.gemini/settings.json` held `httpUrl` and `headers.Authorization = "Bearer ${DEFUSION_TOKEN}"`;
-`DEFUSION_TOKEN=probe gemini mcp list` reported `Connected` and the stub observed
-`Authorization: Bearer probe` on every POST and GET. The env-var form stays; the Gemini row needs no change.
 
 ## 4. Dialog (`setup_ui.py`)
 - Command `defusion_setup`, name "De-Fusion Setup", added to the panel resolved by
@@ -164,7 +155,7 @@ Result: `expands`. Gemini CLI 0.68.0 (`npx -y @google/gemini-cli`, temp `HOME`, 
   undetected or unsupported client appears; when none is detected no client checkbox is created and `isOKButtonEnabled = False`), an npx
   warning text, and a `mode` dropdown (Apply / Remove).
 - Defaults: mode Apply; auth `Enter my own` prefilled with the token when `config.toml` has one
-  (Apply then leaves it `unchanged`), else `Generate token`. The generated token is created once in
+  (Apply then leaves it `unchanged`), else `None` (auth is never on unless chosen). The generated token is created once in
   `CommandCreated`.
 - Each client file and `config.toml` is read once per dialog session in `CommandCreated` (`clients.read`, cached
   bytes, 10 MB bound); `InputChanged` plans from the cache and never re-reads. Execute's Apply
@@ -186,9 +177,8 @@ Result: `expands`. Gemini CLI 0.68.0 (`npx -y @google/gemini-cli`, temp `HOME`, 
   `defusion_setup`, deleted in `stop()`, its handler in `_handlers`; OK only, no Cancel). Its
   `CommandCreated` reads `_result` and builds read-only `TextBoxCommandInput`s: `results` (one line per ticked client, config.toml line, backup paths, and
   the restart note `Port and token changes apply after De-Fusion restarts: Utilities > Add-Ins >
-  De-Fusion > Stop, then Run, or restart Fusion`), `export` (`export DEFUSION_TOKEN=<token>`, only
-  in Apply mode with a ticked terminal client and auth not `None`), `token`, and `warnings` (Codex, npx; both only in Apply mode). The
-  `export` line and token (Apply mode only) show in their own `export` and `token` boxes before OK. No `ui.messageBox`.
+  De-Fusion > Stop, then Run, or restart Fusion`), `token` (Apply mode with auth not `None`), and `warnings` (npx, Apply mode only). The
+  token shows in its own `token` box before OK. No `ui.messageBox`.
 - All of it runs on the Fusion main thread (command events); nothing here is reachable from the
   uvicorn thread.
 
