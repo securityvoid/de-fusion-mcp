@@ -110,7 +110,7 @@ def _created(args):
         cfg = None if errors else parsed
     except ValueError:
         pass
-    found = [c for c in clients.CLIENTS if clients.detect(c)]
+    found = [c for c in clients.CLIENTS if clients.detect(c)] + list(clients.claude_dirs())
     _session = Session(src, found, {c.id: clients.read(c) for c in found}, secrets.token_urlsafe(32))
     port = cfg.port if cfg else config.DEFAULT_PORT
     folder = cfg.folder if cfg and cfg.folder else ""

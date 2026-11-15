@@ -37,6 +37,7 @@ def plan(c, url, token, src) -> Plan # Plan(path, action, reason, original, new,
 def apply(plan) -> Result            # backup + atomic write; Result(status, reason, backup)
                                      # status: ok|unchanged|not-present|skipped
 def remove_plan(c, src) -> Plan
+def claude_dirs(plat=None) -> tuple[Client, ...]   # extra claude-code clients, § 2.7
 def plan_config(port, folder, token, src) -> Plan   # config.toml; src = cached bytes like plan
 MAX_BYTES = 10 * 1024 * 1024         # larger files are skipped (§ 2.6)
 MCP_REMOTE = "mcp-remote@0.16.6"     # exact pinned version; the maintainer bumps it by editing this constant
@@ -115,6 +116,16 @@ set it or add the entry manually`. Such a client is undetected and its plan is `
 reason; nothing is created. A client is detected only when its config file (the resolved path, including an env override) exists; its parent directory is not considered. Such a client does not appear in the dialog; the reason is visible only through `clients.plan`. `clients.plan`/`apply` called directly for a valid client whose file is absent still add the entry and create the file and its missing parent directories (§ 2.4); the dialog never does. `read()` skips a file over `MAX_BYTES` (`<path>: larger than 10 MB; add
 the entry manually`).
 
+### 2.7 Claude Code config directories (REQ-SETUP-015)
+`claude_dirs(plat)` lists `plat.home` (the injected `Platform.home`, so tests use a temp home) once with `iterdir`
+(an `OSError` -> no extra clients), sorted by name. An entry is kept when its name starts with `.`, it is a
+directory and not a symlink, and it holds an entry `.claude.json` that exists and is not a directory (a symlink is kept; § 2.4 skips it at plan time); an `OSError` from any of these
+per-entry checks skips that entry and the scan continues. Each kept `<dir>` (e.g. `.claude-akolytos`) returns
+`Client(f"claude-code{<dir>}", f"Claude Code (~/{<dir>})", "mcpServers", "json", path, build)`: the id is unique
+per directory, `build` is the `claude-code` row's and `path` = `home/<dir>/.claude.json`. The dialog calls `claude_dirs()` once in `CommandCreated` and caches the result
+with the session's other reads (`InputChanged` never rescans); its detected list is
+`[c for c in CLIENTS if detect(c)] + list(claude_dirs(plat))`; `~/.claude.json` stays the table's `claude-code` row.
+
 ## 3. Client table
 ### 3.1 Entries and paths
 | id | label | file (macOS / Windows) | key |
@@ -171,7 +182,7 @@ Windsurf/Devin Windows, inferred from product docs. TASK-SETUP-006 tests what th
   `skipped: <path>: <error>; Apply again` so the remaining clients and the result dialog still run.
   Remove mode applies client plans only. No second prompt.
 - Template. Result: one line
-  `<label>: <status word>` per ticked client in table order, `config.toml` first; status word is `ok`, `unchanged`, `not-present` or `skipped: <reason>`.
+  `<label>: <status word>` per ticked client in table order then `claude_dirs` order, `config.toml` first; status word is `ok`, `unchanged`, `not-present` or `skipped: <reason>`.
 - Result: Execute stores a `Results` object in module variable `_result`, then calls
   `result_def.execute()` on a second command `defusion_setup_result` (definition created beside
   `defusion_setup`, deleted in `stop()`, its handler in `_handlers`; OK only, no Cancel). Its

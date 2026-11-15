@@ -448,3 +448,33 @@ def test_skipped_client_result_has_reason_but_no_snippet(env):
     text = result_box("results").text
     assert "Cursor: skipped: " in text and "mcpServers" not in text and '"de-fusion"' not in text
 
+
+
+def test_claude_config_dirs_get_checkboxes(env, tmp_path):
+    for d in (".claude-akolytos", ".other"):
+        (env / d).mkdir()
+        (env / d / ".claude.json").write_text("{}")
+    (env / "Documents").mkdir()
+    (env / "Documents" / ".claude.json").write_text("{}")
+    real = tmp_path / "real.json"
+    real.write_text("{}")
+    (env / ".x").mkdir()
+    (env / ".x" / ".claude.json").symlink_to(real)
+    cmd = open_dialog(env)
+    ids = ["client_claude-code.claude-akolytos", "client_claude-code.other", "client_claude-code.x"]
+    assert all(box(cmd, i) and box(cmd, i).value for i in ids)
+    assert box(cmd, ids[0]).name == "Claude Code (~/.claude-akolytos)" and box(cmd, "client_claude-codeDocuments") is None
+    box(cmd, ids[1]).value = False
+    cmd.ok()
+    mine = env / ".claude-akolytos" / ".claude.json"
+    assert "de-fusion" in json.loads(mine.read_text())["mcpServers"]
+    assert (env / ".other" / ".claude.json").read_text() == "{}" and real.read_text() == "{}"
+    text = result_box("results").text
+    assert "Claude Code (~/.claude-akolytos): ok" in text and "Claude Code (~/.x): skipped: " in text
+    cmd = open_dialog(env)
+    for i in ids[1:]:
+        box(cmd, i).value = False
+    edit(cmd, "mode", "Remove")
+    cmd.ok()
+    assert json.loads(mine.read_text())["mcpServers"] == {}
+    assert "Claude Code (~/.claude-akolytos): ok" in result_box("results").text

@@ -553,3 +553,46 @@ def test_no_adsk_in_clients():
     out = subprocess.run([sys.executable, "-c", "import sys; import defusion.clients; sys.exit('adsk' in sys.modules)"],
                          env={**os.environ, "PYTHONPATH": str(Path(clients.__file__).parents[1])}, cwd="/")
     assert out.returncode == 0
+
+
+# --- Claude Code config directories (REQ-SETUP-015) ---
+def test_claude_dirs_lists_hidden_dirs_with_claude_json(home, plat, tmp_path, monkeypatch):
+    write(home / ".claude-akolytos" / ".claude.json", "{}")
+    write(home / ".other" / ".claude.json", "{}")
+    (home / ".claude").mkdir()
+    write(home / "Documents" / ".claude.json", "{}")
+    real = write(tmp_path / "real" / ".claude.json", "{}")
+    (home / ".linked").symlink_to(real.parent)
+    write(home / ".locked" / ".claude.json", "{}")
+    (home / ".x").mkdir()
+    (home / ".x" / ".claude.json").symlink_to(real)
+    orig = Path.is_dir
+
+    def is_dir(self):
+        if self.name == ".locked":
+            raise PermissionError("denied")
+        return orig(self)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    found = clients.claude_dirs(plat)
+    assert [c.label for c in found] == ["Claude Code (~/.claude-akolytos)", "Claude Code (~/.other)", "Claude Code (~/.x)"]
+    assert len({c.id for c in found}) == 3 and found[0].path(plat) == home / ".claude-akolytos" / ".claude.json"
+    assert all(c.build is BY_ID["claude-code"].build and c.key == "mcpServers" for c in found)
+
+
+def test_claude_dirs_apply_and_symlink_skip(home, plat, tmp_path):
+    f = write(home / ".claude-akolytos" / ".claude.json", "{}")
+    real = write(tmp_path / "real.json", "{}")
+    (home / ".x").mkdir()
+    (home / ".x" / ".claude.json").symlink_to(real)
+    good, linked = [c for c in clients.claude_dirs(plat) if c.id.endswith((".claude-akolytos", ".x"))]
+    assert clients.apply(clients.plan(good, URL, TOKEN, clients.read(good, plat))).status == "ok"
+    assert json.loads(f.read_text())["mcpServers"]["de-fusion"]["url"] == URL
+    res = clients.apply(clients.plan(linked, URL, TOKEN, clients.read(linked, plat)))
+    assert res.status == "skipped" and "is a symlink; add the entry manually" in res.reason and real.read_text() == "{}"
+    link = home / ".x" / ".claude.json"
+    assert link.is_symlink() and not baks(link) and not baks(real)
+
+
+def test_claude_dirs_unreadable_home(tmp_path):
+    assert clients.claude_dirs(clients.platform(env={}, home=tmp_path / "missing")) == ()

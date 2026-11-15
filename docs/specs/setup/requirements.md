@@ -12,6 +12,8 @@ Section references (§) point to `docs/specs/setup/design.md`.
 2026-11-12: "an in-Fusion button/dialog to set up the MCP: click a few buttons to install into MCP
 clients; include auth option; automatic as possible"
 
+2026-11-15: "detect claude code directories, and there should be checkboxes in the Setup config to choose which ones to install it to"; "look for .claude.json one layer deep from the home directory"
+
 ## Dependencies
 - **DEP-SETUP-001**: Core set `docs/specs/core/` (add-in entry `De-Fusion.py`, `config.py` parsing and
   limits, `guard.norm_folder`, `auth` token rules, `tests/fakes/adsk`, installer url rules in `install.py`).
@@ -144,3 +146,14 @@ clients; include auth option; automatic as possible"
   an install-time smoke note.
   - _Acceptance_: `tests/test_readme.py` finds the section containing `Remove`
     and `restart` and no `export DEFUSION_TOKEN`; design § 6 lists the smoke steps.
+- **REQ-SETUP-015**: Claude Code reads its config from `$CLAUDE_CONFIG_DIR/.claude.json` when that variable
+  is set, which Fusion cannot see, so besides `~/.claude.json` the dialog shall detect every hidden
+  directory directly under the home directory (`~/<dir>/` with a name starting `.`, not a symlink) that holds a `.claude.json`
+  file, and list one ticked checkbox per file, labelled `Claude Code (~/<dir>)`. Each behaves as the
+  `claude-code` client (REQ-SETUP-005, -006, -008, -009) with that file as its config. Non-hidden
+  directories are not scanned.
+  - _Acceptance_: With a temp `HOME` holding `.claude-akolytos/.claude.json`, `.other/.claude.json`, `.claude/` with no
+    `.claude.json`, a non-hidden `Documents/.claude.json`, a symlinked `.linked/`, an unreadable `.locked/` (simulated by monkeypatching the per-entry check to raise `PermissionError`; an `OSError` on its check skips only it) and a symlinked `.x/.claude.json`, the dialog lists the file
+    labels `Claude Code (~/.claude-akolytos)`, `Claude Code (~/.other)` and `Claude Code (~/.x)` only (plus `~/.claude.json` when
+    it exists); Apply writes the entry into each ticked file only (`.x` is reported `skipped: ...is a symlink; add the entry manually`, link and target unchanged, no backup), Remove removes it, and the result screen
+    names each by label.

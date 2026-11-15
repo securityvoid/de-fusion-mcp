@@ -70,7 +70,9 @@ If you set a token, the entry also carries `"headers": {"Authorization": "Bearer
 Prefer clicking to editing JSON? In Fusion, open Utilities > Add-Ins and press **De-Fusion Setup**
 (if the button is missing, check the log in `~/.defusion/`; the server still runs). One dialog sets
 the port, an optional folder limit and the auth, then adds De-Fusion to the MCP clients you tick
-(clients whose config file already exists are listed and pre-ticked). Nothing is written until you press Apply.
+(clients whose config file already exists are listed and pre-ticked). Claude Code with a custom
+`CLAUDE_CONFIG_DIR` is found too: each hidden folder directly under your home that holds a
+`.claude.json` gets its own `Claude Code (~/<dir>)` checkbox. Nothing is written until you press Apply.
 
 - **Apply** writes `~/.defusion/config.toml` (`port`, `folder`, `token`; every other key and comment
   stays) and adds or replaces only the `de-fusion` entry (Codex: `defusion`) in each ticked client's

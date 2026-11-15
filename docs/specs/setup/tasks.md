@@ -67,6 +67,14 @@ set (`docs/specs/core/tasks.md`).
   - _Reuse_: `clients._mode` (0600 for token writes), `tests/test_clients.py` and `tests/test_setup_ui.py` fixtures.
   - _Verify_: `pytest -q && ! grep -rnE "bearer_token_env_var|\.terminal|CODEX_WARN|export DEFUSION_TOKEN" De-Fusion README.md`
 
+## Phase 5 — Claude Code config directories
+- [x] **TASK-SETUP-009** [REQ-SETUP-015]: Detect Claude Code directories
+  - `clients.py`: add `claude_dirs` per § 2.7. `setup_ui.py`: append `claude_dirs()` to the detected list.
+  - Tests: the REQ-SETUP-015 acceptance case in `tests/test_clients.py` and `tests/test_setup_ui.py`; README Setup dialog section names the extra `Claude Code (~/<dir>)` entries, checked in `tests/test_readme.py` (the section contains `Claude Code (~/`).
+  - _Output_: `De-Fusion/defusion/clients.py`, `De-Fusion/defusion/setup_ui.py`, `README.md`, `tests/test_clients.py`, `tests/test_setup_ui.py`, `tests/test_readme.py`
+  - _Reuse_: the `claude-code` row's `build`, `clients.read`/`plan`/`apply`.
+  - _Verify_: `pytest -q`
+
 ## Operator verification (not tasks)
 Click-through in Fusion per design § 6 install-time smoke: button appears in Add-Ins panel, dialog
 one real client connects after restart, Remove removes it.

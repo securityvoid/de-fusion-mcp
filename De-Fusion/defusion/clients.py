@@ -197,6 +197,27 @@ def detect(c, plat=None):
     return isinstance(path, Path) and path.exists()
 
 
+def claude_dirs(plat=None):
+    """Extra Claude Code clients: hidden directories under home holding a ``.claude.json`` (CLAUDE_CONFIG_DIR)."""
+    plat = plat or platform()
+    try:
+        entries = sorted(plat.home.iterdir())
+    except OSError:
+        return ()
+    base = CLIENTS[0]
+    found = []
+    for d in entries:
+        try:
+            if d.name.startswith(".") and d.is_dir() and not d.is_symlink():
+                f = d / ".claude.json"
+                if f.exists() and not f.is_dir():
+                    found.append(Client(f"claude-code{d.name}", f"Claude Code (~/{d.name})", base.key, base.fmt,
+                                        lambda p, f=f: f, base.build))
+        except OSError:
+            continue
+    return tuple(found)
+
+
 def read(c, plat=None):
     plat = plat or platform()
     path = c.path(plat)

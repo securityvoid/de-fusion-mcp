@@ -35,6 +35,7 @@ def test_setup_dialog_section():
     s = section("Setup dialog")
     for tok in ("Remove", "restart", "Add-Ins", "Node.js"):
         assert tok in s
+    assert "Claude Code (~/" in s
     assert "export DEFUSION_TOKEN" not in s
     assert "restart_addin" not in s
 
