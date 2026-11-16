@@ -31,7 +31,8 @@ class Client:
 CLIENTS: tuple[Client, ...]
 def detect(c) -> bool
 def build_url(port, folder) -> str
-def read(c) -> Source                 # bytes | None (absent) | skip reason; once per dialog session (§ 4)
+def read_config() -> Source           # config.toml bytes | None | skip reason; once per dialog session (§ 4)
+def read(c) -> Source                 # bytes | None (absent) | skip reason; read when Apply or Remove runs (§ 4)
 def plan(c, url, token, src) -> Plan # Plan(path, action, reason, original, new, mode)
                                      # action: add|update|remove|unchanged|not-present|skip
 def apply(plan) -> Result            # backup + atomic write; Result(status, reason, backup)
@@ -122,7 +123,7 @@ the entry manually`).
 directory and not a symlink, and it holds an entry `.claude.json` that exists and is not a directory (a symlink is kept; § 2.4 skips it at plan time); an `OSError` from any of these
 per-entry checks skips that entry and the scan continues. Each kept `<dir>` (e.g. `.claude-akolytos`) returns
 `Client(f"claude-code_{safe}", f"Claude Code (~/{<dir>})", "mcpServers", "json", path, build)`, where `safe` is `<dir>` with every character outside `[A-Za-z0-9_-]` replaced by `_` (Fusion rejects other characters in an input id); when two directories give the same id, each later one gets `_` appended until it is unique (name order); `build` is the `claude-code` row's and `path` = `home/<dir>/.claude.json`. The dialog calls `claude_dirs()` once in `CommandCreated` and caches the result
-with the session's other reads (`InputChanged` never rescans); its detected list is
+for the session (`InputChanged` never rescans); its detected list is
 `[c for c in CLIENTS if detect(c)] + list(claude_dirs(plat))`; `~/.claude.json` stays the table's `claude-code` row.
 
 ## 3. Client table
@@ -167,18 +168,19 @@ Windsurf/Devin Windows, inferred from product docs. TASK-SETUP-006 tests what th
 - Defaults: mode Apply; auth `Enter my own` prefilled with the token when `config.toml` has one
   (Apply then leaves it `unchanged`), else `None` (auth is never on unless chosen). The generated token is created once in
   `CommandCreated`.
-- Each client file and `config.toml` is read once per dialog session in `CommandCreated` (`clients.read`, cached
-  bytes, 10 MB bound); `InputChanged` plans from the cache and never re-reads. Execute's Apply
-  re-reads per § 2.1.
-- `InputChanged` plans via `clients.plan_config`/`plan` and validates port (integer 1024-65535), folder
+- `config.toml` is read once per dialog session in `CommandCreated` (`clients.read_config`, cached bytes, 10 MB bound);
+  `InputChanged` never re-reads. Each ticked client file is read (`clients.read`, 10 MB bound) and planned in Execute, just before
+  its write, so a file another program rewrites while the dialog is open (Claude Code) is not skipped; `apply`'s re-read per § 2.1
+  still guards the instant between that plan and the write.
+- `InputChanged` makes no client read or plan; it validates port (integer 1024-65535), folder
   (`norm_folder`, at most `MAX_FOLDER`) and own token (`^[A-Za-z0-9\-._~+/]+=*$`, at most `MAX_TOKEN`);
   `isOKButtonEnabled` is true only when all are valid and a client is detected. In Remove mode
-  `plan_config` and the port/folder/token validation are skipped; OK is still disabled with no client detected.
+  the port/folder/token validation is skipped and Execute plans no `config.toml`; OK is still disabled with no client detected.
 - `Execute` (OK, labelled "Apply" / "Remove" per mode), Apply mode: apply the `config.toml` plan
   first. When that plan is `skip` or its apply is `skipped`, whatever the auth choice, apply no client
   plan and report each ticked client `skipped: config.toml not updated; fix config.toml and Apply
-  again`. Otherwise apply each client plan, catching any per-client exception into
-  `skipped: <path>: <error>; Apply again` so the remaining clients and the result dialog still run.
+  again`. Otherwise, for each client (Apply and Remove), read, plan and apply it inside one per-client catch that turns any exception into
+  `skipped: <error>; Apply again` (an exception from `apply` also names the path) so the remaining clients and the result dialog still run.
   Remove mode applies client plans only. No second prompt.
 - Template. Result: one line
   `<label>: <status word>` per ticked client in table order then `claude_dirs` order, `config.toml` first; status word is `ok`, `unchanged`, `not-present` or `skipped: <reason>`.

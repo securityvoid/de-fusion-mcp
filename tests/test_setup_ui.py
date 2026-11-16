@@ -234,16 +234,18 @@ def test_unreadable_config_does_not_disable_ok(env):
     assert "config.toml: skipped: " in result_box("results").text
 
 
-def test_reads_once_per_session(env, monkeypatch):
+def test_config_read_once_per_session_and_clients_at_execute(env, monkeypatch):
     reads = []
     real = clients.read_path
     monkeypatch.setattr(clients, "read_path", lambda p, b: reads.append(p) or real(p, b))
     cmd = open_dialog(env, "cursor", "zed")
     n = len(reads)
-    assert n == 3
+    assert n == 1
     for i in range(20):
         edit(cmd, "port", str(9000 + i))
     assert len(reads) == n
+    cmd.ok()
+    assert sorted(p.name for p in reads[n:] if p.name != "config.toml") == ["mcp.json"] * 2 + ["settings.json"] * 2
 
 
 # --- REQ-SETUP-010: tokens, export, warnings ---
@@ -346,18 +348,52 @@ def test_remove_ignores_invalid_config(env):
     text = result_box("results").text
     assert "Cursor: ok" in text and "config.toml not updated" not in text
     assert json.loads(cursor_path(env).read_text())["mcpServers"] == {}
-
-
-def test_changed_since_dialog_opened(env):
+def test_client_file_changed_since_dialog_opened_still_gets_entry(env):
     cursor_path(env).parent.mkdir()
     cursor_path(env).write_text("{}")
     cmd = open_dialog(env, "cursor")
     untick_all_but(cmd, "cursor")
     cursor_path(env).write_text('{"mutated": true}')
     cmd.ok()
-    assert "Cursor: skipped: " in result_box("results").text and "changed since the dialog opened; reopen the dialog" in result_box("results").text
+    assert "Cursor: ok" in result_box("results").text
+    saved = json.loads(cursor_path(env).read_text())
+    assert saved["mutated"] is True and "de-fusion" in saved["mcpServers"]
+
+
+def test_client_file_rewritten_between_plan_and_write_is_skipped(env, monkeypatch):
+    cursor_path(env).parent.mkdir()
+    cursor_path(env).write_text("{}")
+    cmd = open_dialog(env, "cursor")
+    untick_all_but(cmd, "cursor")
+    real = clients.apply
+
+    def racing(p):
+        if p.path == cursor_path(env):
+            cursor_path(env).write_text('{"mutated": true}')
+        return real(p)
+
+    monkeypatch.setattr(clients, "apply", racing)
+    cmd.ok()
+    assert "Cursor: skipped: " in result_box("results").text and "changed since the dialog opened" in result_box("results").text
     assert cursor_path(env).read_text() == '{"mutated": true}'
     assert not list(cursor_path(env).parent.glob("*bak*"))
+
+
+@pytest.mark.parametrize("mode", ["Apply", "Remove"])
+def test_raising_client_read_is_skipped_and_next_client_runs(env, monkeypatch, mode):
+    cmd = open_dialog(env, "cursor", "zed")
+    edit(cmd, "mode", mode)
+    real = clients.read
+
+    def boom(c, *a):
+        if c.id == "cursor":
+            raise RuntimeError("boom")
+        return real(c, *a)
+
+    monkeypatch.setattr(clients, "read", boom)
+    cmd.ok()
+    text = result_box("results").text
+    assert "Cursor: skipped: boom; Apply again" in text and ("Zed: ok" if mode == "Apply" else "Zed: not-present") in text
 
 
 @pytest.mark.parametrize("auth", [GEN, NONE, OWN])

@@ -13,3 +13,5 @@
 | 0.4.0 | 2026-11-14 | Every client gets the literal token (no `DEFUSION_TOKEN` env reference, no export line or Codex warning); default auth `None` when config.toml has no token; REQ-SETUP-011 and design § 3.3 removed: REQ-SETUP-002, -004, -006, -009, -010, -014; design §2, 2.3, 3.1, 4; TASK-SETUP-006 trimmed, TASK-SETUP-008 added |
 | 0.5.0 | 2026-11-15 | Setup detects Claude Code config files in hidden directories directly under home (CLAUDE_CONFIG_DIR) with one checkbox each: REQ-SETUP-015; design § 2.7; TASK-SETUP-009 |
 | 0.5.1 | 2026-11-15 | Design § 2.7: Claude Code directory client id uses only `[A-Za-z0-9_-]` because Fusion rejects a dot in an input id; a duplicate id gets `_` appended until unique |
+| 0.6.0 | 2026-11-15 | Client files are read and planned when Apply or Remove runs (only `config.toml` stays cached and guarded), so a config another program rewrites, such as a running Claude Code, is written: REQ-SETUP-009; design § 2.1, 4; TASK-SETUP-010 |
+| 0.6.1 | 2026-11-15 | Design § 4: an exception from reading or planning a client file reads `skipped: <error>; Apply again` under the client label |

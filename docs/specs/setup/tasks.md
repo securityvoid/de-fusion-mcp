@@ -75,6 +75,15 @@ set (`docs/specs/core/tasks.md`).
   - _Reuse_: the `claude-code` row's `build`, `clients.read`/`plan`/`apply`.
   - _Verify_: `pytest -q`
 
+## Phase 6 — Client files read at Apply
+- [x] **TASK-SETUP-010** [REQ-SETUP-009]: Read client files when Execute runs
+  - `setup_ui.py`: drop `Session.sources` and the per-client read in `_created`; `_plans` calls `clients.read(c)` for each ticked client (only `config.toml` stays cached).
+  - Tests: in `tests/test_setup_ui.py`, a client file mutated after the dialog opened is `ok`, keeps the mutation and gains the entry; opening the dialog and 20 input changes read only `config.toml`, Execute reads the ticked client files; `test_changed_since_dialog_opened` for `config.toml` stays; `clients.read` raising for the first ticked client gives `skipped: ...; Apply again` for it, the next client `ok` and the result dialog still runs; a ticked client file rewritten after Execute's read and before `apply` (monkeypatch `clients.apply` to write first) is skipped, keeps the new bytes and has no backup.
+  - `_plans` returns `[(Client, Callable[[], Plan])]`; Execute calls each thunk inside the per-client catch, and an exception from the read or plan gives `<label>: skipped: <error>; Apply again`.
+  - _Output_: `De-Fusion/defusion/setup_ui.py`, `tests/test_setup_ui.py`
+  - _Reuse_: `clients.read`, `clients.plan`, `clients.apply`.
+  - _Verify_: `pytest -q`
+
 ## Operator verification (not tasks)
 Click-through in Fusion per design § 6 install-time smoke: button appears in Add-Ins panel, dialog
 one real client connects after restart, Remove removes it.

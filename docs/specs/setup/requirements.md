@@ -105,9 +105,9 @@ clients; include auth option; automatic as possible"
   shall be reported "not-present" with no write and no backup; Remove shall not touch `config.toml` and skips config planning and port, folder and token validation.
   - _Acceptance_: Merge then remove restores the original parsed content for every client; remove on
     a file without the entry leaves it byte-identical and creates no backup file.
-- **REQ-SETUP-009**: Apply and Remove shall act on the files as read when the dialog opened: each file (config.toml and each
-  client file) is read and planned once per dialog session (bytes cached), and a file
-  changed since the dialog opened is skipped with `changed since the dialog opened; reopen the dialog`. Execute shall apply config.toml
+- **REQ-SETUP-009**: `config.toml` is read once per dialog session (bytes cached) and is skipped with `changed since the dialog opened;
+  reopen the dialog` when it changed after the dialog opened. Each client file is read and planned when Apply or Remove runs, not cached,
+  so a file that another program keeps rewriting (a running Claude Code) still gets its entry. Execute shall apply config.toml
   first; in Apply mode a skipped or failed config.toml plan, whatever the auth choice, writes no client and reports each
   ticked client `skipped: config.toml not updated; fix config.toml and Apply again`. After the action a result screen, a second
   command dialog with read-only text boxes (not a `messageBox`), shall list one `<label>: <status word>` line per client (`ok` /
@@ -117,11 +117,12 @@ clients; include auth option; automatic as possible"
   item and the action to take.
   - _Acceptance_: With the fake dialog, the result dialog's read-only inputs hold one line per ticked client (`config.toml` line first) with the exact wording
     `ok` / `skipped: <reason>` / `not-present` / `unchanged`, the backup path and the
-    restart note (contains `Add-Ins`, not `restart_addin`); a file mutated after the dialog opened is `skipped:
-    changed since the dialog opened; reopen the dialog`, keeps the mutated bytes and has no backup; with an invalid existing
+    restart note (contains `Add-Ins`, not `restart_addin`); a `config.toml` mutated after the dialog opened is `skipped:
+    changed since the dialog opened; reopen the dialog`, keeps the mutated bytes and has no backup, while a client file mutated after the dialog opened
+    is `ok`, keeps the mutated content and gains the entry; with an invalid existing
     config.toml and any auth choice (including `None`) every ticked client file is byte-identical, has no backup and is
     reported skipped; a raising client does not stop the next client or the result dialog; 20 input
-    changes cause one read of config.toml and one per client.
+    changes cause one read of config.toml and none of a client file.
 - **REQ-SETUP-010**: Generated tokens shall be `secrets.token_urlsafe(32)`, generated once per dialog
   session and shown unmasked in a read-only box. In Apply mode with auth not `None`, the `token` box of the result screen shall show the token
   in a copyable read-only box. De-Fusion shall never edit a shell profile. In Apply mode, when Claude Desktop

@@ -29,11 +29,10 @@ _handlers = []  # every created handler, so Fusion's weak references stay alive
 
 @dataclass
 class Session:
-    """What one dialog session read and generated; the dialog plans from it and never re-reads."""
+    """What one dialog session read and generated; config.toml is read once, client files when Execute runs."""
 
     config_src: object
     found: list
-    sources: dict
     token: str
 
 
@@ -111,7 +110,7 @@ def _created(args):
     except ValueError:
         pass
     found = [c for c in clients.CLIENTS if clients.detect(c)] + list(clients.claude_dirs())
-    _session = Session(src, found, {c.id: clients.read(c) for c in found}, secrets.token_urlsafe(32))
+    _session = Session(src, found, secrets.token_urlsafe(32))
     port = cfg.port if cfg else config.DEFAULT_PORT
     folder = cfg.folder if cfg and cfg.folder else ""
     own = cfg.token if cfg and cfg.token else ""
@@ -165,15 +164,15 @@ def _ticked(inputs):
 
 
 def _plans(inputs):
-    """(valid, config plan | None, [(client, plan)], token) for the current inputs, from the session cache."""
+    """(valid, config plan | None, [(client, plan thunk)], token) for the current inputs; a thunk reads the client file when called."""
     if _selected(inputs, "mode") == MODES[1]:
-        return True, None, [(c, clients.remove_plan(c, _session.sources[c.id])) for c in _ticked(inputs)], None
+        return True, None, [(c, lambda c=c: clients.remove_plan(c, clients.read(c))) for c in _ticked(inputs)], None
     valid, port, folder, token = _validate(inputs)
     if not valid:
         return False, None, [], None
     url = clients.build_url(port, folder)
     cfg_plan = clients.plan_config(port, folder, token, _session.config_src)
-    return True, cfg_plan, [(c, clients.plan(c, url, token, _session.sources[c.id])) for c in _ticked(inputs)], token
+    return True, cfg_plan, [(c, lambda c=c: clients.plan(c, url, token, clients.read(c))) for c in _ticked(inputs)], token
 
 
 def _warnings(ticked):
@@ -202,6 +201,14 @@ def _safe_apply(p):
         return clients.Result("skipped", "%s: %s; Apply again" % (p.path, exc), None)
 
 
+def _apply_client(make):
+    try:
+        p = make()
+    except Exception as exc:
+        return clients.Result("skipped", "%s; Apply again" % exc, None)
+    return _safe_apply(p)
+
+
 def _execute(inputs):
     global _result
     valid, cfg_plan, items, token = _plans(inputs)
@@ -220,11 +227,11 @@ def _execute(inputs):
         r = _safe_apply(cfg_plan)
         record("config.toml", r)
         blocked = r.status == "skipped"
-    for c, p in items:
+    for c, make in items:
         if blocked:
             lines.append("%s: skipped: config.toml not updated; fix config.toml and Apply again" % c.label)
         else:
-            record(c.label, _safe_apply(p))
+            record(c.label, _apply_client(make))
     _result = Results(lines, backups, token or "", "" if remove else _warnings(_ticked(inputs)))
     _ui().commandDefinitions.itemById(RESULT_ID).execute()
 
